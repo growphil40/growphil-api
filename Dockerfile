@@ -3,8 +3,8 @@ FROM node:20-alpine AS builder
 
 WORKDIR /usr/src/app
 
-# Install build dependencies for native modules (e.g. bcrypt)
-RUN apk add --no-cache python3 make g++
+# Install build dependencies and Prisma dependencies
+RUN apk add --no-cache python3 make g++ openssl libc6-compat
 
 # Copy dependency configuration
 COPY package*.json ./
@@ -26,6 +26,9 @@ RUN npm run build
 FROM node:20-alpine
 
 WORKDIR /usr/src/app
+
+# Install runtime dependencies for Prisma
+RUN apk add --no-cache openssl libc6-compat
 
 COPY package*.json ./
 COPY prisma ./prisma/
