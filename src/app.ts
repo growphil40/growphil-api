@@ -1,0 +1,132 @@
+import dotenv from 'dotenv';
+dotenv.config(); // Must be loaded first before any environment variables are accessed by imports
+
+import express, { Request, Response, NextFunction } from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import http from 'http';
+import { authRouter } from './modules/auth/auth.routes';
+import { agencyRouter } from './modules/agency/agency.routes';
+import { leadsRouter } from './modules/leads/leads.routes';
+import { followUpsRouter } from './modules/follow-ups/follow-ups.routes';
+import { salesRouter } from './modules/sales/sales.routes';
+import { metaRouter } from './modules/meta/meta.routes';
+import { googleSheetsRouter } from './modules/google-sheets/googleSheets.routes';
+import { superAdminAgenciesRouter } from './modules/super-admin/agencies.routes';
+import { authMiddleware } from './middleware/auth';
+import { tenantScopeMiddleware } from './middleware/tenantScope';
+import { errorHandler } from './middleware/errorHandler';
+import { requireRoles } from './middleware/rbac';
+import { initializeSocketIO } from './sockets';
+import { generalLimiter } from './middleware/rateLimiter';
+
+// Bull Board imports
+import { createBullBoard } from '@bull-board/api';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { ExpressAdapter } from '@bull-board/express';
+import { metaLeadsQueue, metaLeadsFailedQueue } from './queues/metaLeadsQueue';
+import { tokenRefreshQueue } from './queues/tokenRefreshQueue';
+import { notificationsQueue } from './queues/notificationsQueue';
+import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs } from './queues/spreadsheet.queue';
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Create HTTP server (required for Socket.IO integration)
+const server = http.createServer(app);
+const io = initializeSocketIO(server);
+
+// Bind Socket.IO server onto express instance
+app.set('io', io);
+
+// Configure Bull Board dashboard
+const serverAdapter = new ExpressAdapter();
+serverAdapter.setBasePath('/admin/queues');
+
+createBullBoard({
+  queues: [
+    new BullMQAdapter(metaLeadsQueue) as any,
+    new BullMQAdapter(metaLeadsFailedQueue) as any,
+    new BullMQAdapter(tokenRefreshQueue) as any,
+    new BullMQAdapter(notificationsQueue) as any,
+    new BullMQAdapter(spreadsheetQueue) as any,
+  ],
+  serverAdapter: serverAdapter,
+});
+
+// CORS Security Setup
+const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:5173';
+const corsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    if (!origin || origin === allowedOrigin) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+};
+
+// Global Security headers
+app.use(helmet());
+app.use(cors(corsOptions));
+
+// Meta webhook and OAuth routes (Mounted before express.json() for raw webhook signature verification)
+app.use('/v1/meta', metaRouter);
+
+// Base parser middleware
+app.use(express.json());
+
+// Public health check
+app.get('/health', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    data: {
+      status: 'UP',
+      timestamp: new Date().toISOString(),
+      env: process.env.NODE_ENV
+    },
+    meta: {}
+  });
+});
+
+// Authentication routes (Public, with internal rate limits)
+app.use('/v1/auth', authRouter);
+
+// Agency Management routes (Protected, Agency Admin only, rate limited)
+app.use('/v1/agency', generalLimiter, agencyRouter);
+
+// Leads pipeline routes (Protected, Agency Admin or Client Owner, rate limited)
+app.use('/v1/leads', generalLimiter, leadsRouter);
+
+// Follow-ups management routes (Protected, Agency Admin or Client Owner, rate limited)
+app.use('/v1/follow-ups', generalLimiter, followUpsRouter);
+
+// Sales management routes (Protected, Client Owner only, rate limited)
+app.use('/v1/sales', generalLimiter, salesRouter);
+
+// Google Sheets Connector routes (Protected, Client Owner or Agency Admin, rate limited)
+app.use('/v1/google', generalLimiter, googleSheetsRouter);
+
+// Agencies management routes (Protected, Super Admin only, rate limited)
+app.use('/v1/agencies', generalLimiter, superAdminAgenciesRouter);
+
+// Queue Dashboard (Protected, Super Admin only)
+app.use('/admin/queues', authMiddleware, requireRoles(['super_admin']), serverAdapter.getRouter());
+
+// Standardized Error Handler (Catches validation, auth, and system errors)
+app.use(errorHandler);
+
+// Start listening if not imported as module (e.g. for testing)
+if (process.env.NODE_ENV !== 'test') {
+  server.listen(PORT, async () => {
+    console.log(`🚀 GrowPhil CRM API is running at http://localhost:${PORT}`);
+    try {
+      await cleanupOrphanedSpreadsheetJobs();
+    } catch (err: any) {
+      console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
+    }
+  });
+}
+
+export default app;

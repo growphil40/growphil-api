@@ -1,0 +1,81 @@
+import { Queue, Worker } from 'bullmq';
+import prisma from '../config/db';
+import { runBypassingTenant } from '../utils/tenant-context';
+import { getIo } from '../sockets';
+import { emitFollowUpDue } from '../sockets/leadEvents';
+import { redisConnection } from '../utils/redis';
+
+const connection = redisConnection;
+
+export const notificationsQueue = new Queue('notifications', {
+  connection: connection as any,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: {
+      type: 'exponential',
+      delay: 2000,
+    },
+  },
+});
+
+export const notificationsWorker = new Worker(
+  'notifications',
+  async (job) => {
+    console.log(`[Queue Worker] Processing job: ${job.name} (id: ${job.id})`);
+
+    if (job.name === 'send-reminder') {
+      const { followUpId } = job.data;
+
+      await runBypassingTenant(async () => {
+        // Fetch follow up and lead details
+        const followUp = await prisma.followUp.findUnique({
+          where: { id: followUpId },
+          include: { lead: true },
+        });
+
+        if (!followUp) {
+          console.warn(`[Reminder Worker] FollowUp ID ${followUpId} not found. Skipping.`);
+          return;
+        }
+
+        // Only send reminder if still pending
+        if (followUp.status !== 'pending') {
+          console.log(`[Reminder Worker] FollowUp ID ${followUpId} is already status: ${followUp.status}. Skipping alert.`);
+          return;
+        }
+
+        const lead = followUp.lead;
+
+        // Simulate sending email reminder
+        console.log('--------------------------------------------------');
+        console.log(`✉️ [EMAIL NOTIFICATION] SENDING REMINDER`);
+        console.log(`To: Agency/Client Staff`);
+        console.log(`Subject: [GrowPhil CRM] Follow-up due for lead: ${lead.name}`);
+        console.log(`Body: Hello! You have a scheduled follow-up reminder.`);
+        console.log(`Lead Name: ${lead.name}`);
+        console.log(`Scheduled Time: ${followUp.scheduledAt}`);
+        console.log(`Note: ${followUp.note || 'No note attached'}`);
+        console.log('--------------------------------------------------');
+
+        // Emit Socket.IO follow_up:due notification if lead is assigned to a user
+        if (lead.assignedTo) {
+          try {
+            const io = getIo();
+            emitFollowUpDue(io, lead.assignedTo, {
+              followUpId: followUp.id,
+              leadId: followUp.leadId,
+              note: followUp.note,
+            });
+          } catch (socketError: any) {
+            console.error('[Reminder Worker Error] Failed to emit follow_up:due socket event:', socketError.message);
+          }
+        }
+
+        // Optional: Update follow-up status to indicate reminder was sent (or keep pending)
+        // Let's keep it pending so user can mark it as done manually, but we log successful execution
+        console.log(`[Reminder Worker] Successfully sent follow-up reminder for Lead: ${lead.name}`);
+      });
+    }
+  },
+  { connection: connection as any }
+);
