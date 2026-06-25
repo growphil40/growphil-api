@@ -31,6 +31,12 @@ export function errorHandler(
     code = 'TENANT_VIOLATION';
   }
 
+  // Handle CORS errors
+  if (message.startsWith('Not allowed by CORS')) {
+    statusCode = 403;
+    code = 'CORS_FORBIDDEN';
+  }
+
   // Hide stack trace in production, log details internally
   if (statusCode === 500) {
     console.error(`[SYSTEM ERROR] ${err.stack || err.message}`);

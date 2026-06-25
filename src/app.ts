@@ -54,14 +54,35 @@ createBullBoard({
   serverAdapter: serverAdapter,
 });
 
-// CORS Security Setup
-const allowedOrigin = process.env.FRONTEND_URL || 'http://localhost:5173';
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+].filter((o): o is string => Boolean(o));
+
+// Support comma-separated origins in FRONTEND_URL
+if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.includes(',')) {
+  const additional = process.env.FRONTEND_URL.split(',').map((o) => o.trim()).filter(Boolean);
+  allowedOrigins.push(...additional);
+}
+
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin || origin === allowedOrigin) {
+    // Allow requests with no origin (like mobile apps, curl, or postman)
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    
+    const isAllowed = allowedOrigins.some((allowed) => {
+      return origin === allowed || (allowed.startsWith('http://localhost') && origin.startsWith('http://localhost'));
+    });
+
+    if (isAllowed) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error(`Not allowed by CORS: Origin '${origin}' is not registered in allowed origins.`));
     }
   },
   credentials: true,
