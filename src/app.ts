@@ -31,6 +31,7 @@ import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs } from './queues/sprea
 import { trialExpiryQueue, scheduleDailyTrialSweep } from './queues/trialExpiryQueue';
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // Create HTTP server (required for Socket.IO integration)
