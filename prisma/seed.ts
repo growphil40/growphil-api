@@ -22,12 +22,23 @@ async function main() {
   // 1. Create default Agency
   const agency = await prisma.agency.upsert({
     where: { email: 'agency@growphil.com' },
-    update: {},
+    update: {
+      emailVerified: true,
+      subscriptionStatus: 'ACTIVE',
+      subscriptionPlan: 'PROFESSIONAL',
+    },
     create: {
       name: 'GrowPhil Marketing Agency',
       email: 'agency@growphil.com',
       plan: AgencyPlan.pro,
       isActive: true,
+      emailVerified: true,
+      emailVerifiedAt: new Date(),
+      subscriptionStatus: 'ACTIVE',
+      subscriptionPlan: 'PROFESSIONAL',
+      trialStartDate: new Date(),
+      trialEndDate: new Date(Date.now() + 45 * 24 * 60 * 60 * 1000),
+      isTrialExpired: false,
     },
   });
 

@@ -28,6 +28,7 @@ import { metaLeadsQueue, metaLeadsFailedQueue } from './queues/metaLeadsQueue';
 import { tokenRefreshQueue } from './queues/tokenRefreshQueue';
 import { notificationsQueue } from './queues/notificationsQueue';
 import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs } from './queues/spreadsheet.queue';
+import { trialExpiryQueue, scheduleDailyTrialSweep } from './queues/trialExpiryQueue';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,6 +51,7 @@ createBullBoard({
     new BullMQAdapter(tokenRefreshQueue) as any,
     new BullMQAdapter(notificationsQueue) as any,
     new BullMQAdapter(spreadsheetQueue) as any,
+    new BullMQAdapter(trialExpiryQueue) as any,
   ],
   serverAdapter: serverAdapter,
 });
@@ -163,6 +165,11 @@ if (process.env.NODE_ENV !== 'test') {
       await cleanupOrphanedSpreadsheetJobs();
     } catch (err: any) {
       console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
+    }
+    try {
+      await scheduleDailyTrialSweep();
+    } catch (err: any) {
+      console.error('Failed to schedule startup daily trial sweep:', err.message);
     }
   });
 }

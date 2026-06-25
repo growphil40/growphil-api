@@ -12,6 +12,10 @@ export interface TokenPayload {
   role: string;
   tenantId: string;
   tenantType: 'agency' | 'client';
+  subscriptionStatus?: string | null;
+  subscriptionPlan?: string | null;
+  trialEndDate?: string | null;
+  isTrialExpired?: boolean;
 }
 
 /**
@@ -65,6 +69,28 @@ export async function createRefreshToken(userId: string, tenantId: string, tenan
 }
 
 /**
+ * Resolves the parent agency profile details for any system user.
+ */
+async function getAgencyForUser(user: { agencyId?: string | null; clientId?: string | null }) {
+  if (user.agencyId) {
+    return prisma.agency.findUnique({
+      where: { id: user.agencyId },
+    });
+  }
+  if (user.clientId) {
+    const client = await prisma.client.findUnique({
+      where: { id: user.clientId },
+    });
+    if (client) {
+      return prisma.agency.findUnique({
+        where: { id: client.agencyId },
+      });
+    }
+  }
+  return null;
+}
+
+/**
  * Validates a user's email and password, returning tokens and user details.
  */
 export async function loginUser(email: string, passwordPlain: string) {
@@ -90,15 +116,20 @@ export async function loginUser(email: string, passwordPlain: string) {
       throw err;
     }
 
-    // Check if associated agency is suspended
-    if (user.agencyId) {
-      const associatedAgency = await prisma.agency.findUnique({
-        where: { id: user.agencyId },
-      });
-      if (associatedAgency && !associatedAgency.isActive) {
+    // Check if associated agency is suspended or unverified
+    const associatedAgency = await getAgencyForUser(user);
+    if (associatedAgency) {
+      if (!associatedAgency.isActive) {
         const err: any = new Error('Your agency account has been suspended. Please contact support.');
         err.statusCode = 403;
         err.code = 'FORBIDDEN';
+        throw err;
+      }
+
+      if (!associatedAgency.emailVerified) {
+        const err: any = new Error('Please verify your email before logging in.');
+        err.statusCode = 403;
+        err.code = 'EMAIL_NOT_VERIFIED';
         throw err;
       }
     }
@@ -120,12 +151,21 @@ export async function loginUser(email: string, passwordPlain: string) {
       throw new Error('User does not belong to any agency or client tenant.');
     }
 
+    const subscriptionStatus = associatedAgency?.subscriptionStatus || null;
+    const subscriptionPlan = associatedAgency?.subscriptionPlan || null;
+    const trialEndDate = associatedAgency?.trialEndDate ? associatedAgency.trialEndDate.toISOString() : null;
+    const isTrialExpired = associatedAgency?.isTrialExpired || false;
+
     // 4. Generate access token
     const accessToken = await generateAccessToken({
       userId: user.id,
       role: user.role,
       tenantId,
       tenantType,
+      subscriptionStatus,
+      subscriptionPlan,
+      trialEndDate,
+      isTrialExpired,
     });
 
     // 5. Generate refresh token
@@ -140,6 +180,10 @@ export async function loginUser(email: string, passwordPlain: string) {
         role: user.role,
         tenantId,
         tenantType,
+        subscriptionStatus,
+        subscriptionPlan,
+        trialEndDate,
+        isTrialExpired,
       },
     };
   });
@@ -204,21 +248,27 @@ export async function rotateRefreshToken(compoundToken: string) {
       throw err;
     }
 
-    // Check if associated agency is suspended
-    if (tokenRecord.user.agencyId) {
-      const associatedAgency = await prisma.agency.findUnique({
-        where: { id: tokenRecord.user.agencyId },
-      });
-      if (associatedAgency && !associatedAgency.isActive) {
+    const user = tokenRecord.user;
+
+    // Check if associated agency is suspended or unverified
+    const associatedAgency = await getAgencyForUser(user);
+    if (associatedAgency) {
+      if (!associatedAgency.isActive) {
         const err: any = new Error('Your agency account has been suspended. Please contact support.');
         err.statusCode = 403;
         err.code = 'FORBIDDEN';
         throw err;
       }
+
+      if (!associatedAgency.emailVerified) {
+        const err: any = new Error('Please verify your email before logging in.');
+        err.statusCode = 403;
+        err.code = 'EMAIL_NOT_VERIFIED';
+        throw err;
+      }
     }
 
     // 4. Resolve tenant scope
-    const user = tokenRecord.user;
     let tenantId = '';
     let tenantType: 'agency' | 'client' = 'agency';
 
@@ -238,12 +288,21 @@ export async function rotateRefreshToken(compoundToken: string) {
       where: { id: tokenId },
     });
 
+    const subscriptionStatus = associatedAgency?.subscriptionStatus || null;
+    const subscriptionPlan = associatedAgency?.subscriptionPlan || null;
+    const trialEndDate = associatedAgency?.trialEndDate ? associatedAgency.trialEndDate.toISOString() : null;
+    const isTrialExpired = associatedAgency?.isTrialExpired || false;
+
     // 6. Generate new access & refresh tokens
     const newAccessToken = await generateAccessToken({
       userId: user.id,
       role: user.role,
       tenantId,
       tenantType,
+      subscriptionStatus,
+      subscriptionPlan,
+      trialEndDate,
+      isTrialExpired,
     });
 
     const newRefreshToken = await createRefreshToken(user.id, tenantId, tenantType);

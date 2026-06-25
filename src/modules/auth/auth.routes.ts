@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { login, refresh, logout } from './auth.controller';
+import { register, verifyEmail, resendVerification } from './register.controller';
 
 const router = Router();
 
@@ -23,6 +24,9 @@ const authLimiter = rateLimit({
 });
 
 // Apply rate limiting to all auth endpoints
+router.post('/register', authLimiter, register);
+router.get('/verify-email', verifyEmail);
+router.post('/verify-email/resend', authLimiter, resendVerification);
 router.post('/login', authLimiter, login);
 router.post('/refresh', authLimiter, refresh);
 router.post('/logout', authLimiter, logout);

@@ -15,6 +15,19 @@ enum AgencyPlan {
   pro
 }
 
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  EXPIRED
+  SUSPENDED
+}
+
+enum SubscriptionPlan {
+  FREE_TRIAL
+  STARTER
+  PROFESSIONAL
+}
+
 enum UserRole {
   super_admin
   agency_admin
@@ -40,14 +53,25 @@ enum FollowUpStatus {
 }
 
 model Agency {
-  id           String        @id @default(uuid()) @db.Uuid
-  name         String        @db.VarChar(255)
-  email        String        @unique @db.VarChar(255)
-  plan         AgencyPlan
-  trialEndsAt  DateTime?     @map("trial_ends_at")
-  isActive     Boolean       @default(true) @map("is_active")
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
+  id                         String             @id @default(uuid()) @db.Uuid
+  name                       String             @db.VarChar(255)
+  email                      String             @unique @db.VarChar(255)
+  plan                       AgencyPlan
+  trialEndsAt                DateTime?          @map("trial_ends_at")
+  isActive                   Boolean            @default(true) @map("is_active")
+  emailVerified              Boolean            @default(false) @map("email_verified")
+  emailVerifiedAt            DateTime?          @map("email_verified_at")
+  verificationToken          String?            @map("verification_token")
+  verificationTokenExpiresAt DateTime?          @map("verification_token_expires_at")
+  subscriptionStatus         SubscriptionStatus @default(TRIAL) @map("subscription_status")
+  subscriptionPlan           SubscriptionPlan   @default(FREE_TRIAL) @map("subscription_plan")
+  trialStartDate             DateTime?          @map("trial_start_date")
+  trialEndDate               DateTime?          @map("trial_end_date")
+  subscriptionStartDate      DateTime?          @map("subscription_start_date")
+  subscriptionEndDate        DateTime?          @map("subscription_end_date")
+  isTrialExpired             Boolean            @default(false) @map("is_trial_expired")
+  createdAt                  DateTime           @default(now()) @map("created_at")
+  updatedAt                  DateTime           @updatedAt @map("updated_at")
 
   clients       Client[]
   users         User[]

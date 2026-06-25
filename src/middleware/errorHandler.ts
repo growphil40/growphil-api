@@ -49,5 +49,11 @@ export function errorHandler(
   res.status(statusCode).json({
     success: false,
     error: message,
+    code,
+    errorDetails: {
+      message,
+      code,
+      details: err.details,
+    },
   });
 }
