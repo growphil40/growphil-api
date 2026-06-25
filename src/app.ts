@@ -54,16 +54,22 @@ createBullBoard({
   serverAdapter: serverAdapter,
 });
 
+const sanitizeOrigin = (url: string) => {
+  return url.replace(/^["']|["']$/g, '').replace(/\/+$/, '').trim();
+};
+
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'http://localhost:5173',
   process.env.FRONTEND_URL,
-].filter((o): o is string => Boolean(o));
+]
+  .filter((o): o is string => Boolean(o))
+  .map(sanitizeOrigin);
 
 // Support comma-separated origins in FRONTEND_URL
 if (process.env.FRONTEND_URL && process.env.FRONTEND_URL.includes(',')) {
-  const additional = process.env.FRONTEND_URL.split(',').map((o) => o.trim()).filter(Boolean);
+  const additional = process.env.FRONTEND_URL.split(',').map((o) => sanitizeOrigin(o)).filter(Boolean);
   allowedOrigins.push(...additional);
 }
 
