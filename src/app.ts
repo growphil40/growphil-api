@@ -77,6 +77,17 @@ app.use('/v1/meta', metaRouter);
 // Base parser middleware
 app.use(express.json());
 
+// Root health endpoint
+app.get('/', (req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    application: "GrowPhil CRM API",
+    status: "Running",
+    environment: process.env.NODE_ENV,
+    version: "1.0.0"
+  });
+});
+
 // Public health check
 app.get('/health', (req: Request, res: Response) => {
   res.json({
