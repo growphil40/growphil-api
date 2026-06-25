@@ -3,6 +3,8 @@ import crypto from 'crypto';
 import * as jose from 'jose';
 import prisma from '../../config/db';
 import { runBypassingTenant } from '../../utils/tenant-context';
+import { sendForgotPassword, sendResetPassword } from './email.service';
+import { logger } from '../../utils/logger';
 
 const BCRYPT_SALT_ROUNDS = 12;
 const ACCESS_TOKEN_EXPIRY = '15m';
@@ -333,3 +335,96 @@ export async function invalidateRefreshToken(compoundToken: string): Promise<voi
     });
   });
 }
+
+/**
+ * Initiates the password reset flow.
+ * Generates a reset token, saves its hash, and triggers a Resend email.
+ */
+export async function requestPasswordReset(email: string): Promise<void> {
+  return runBypassingTenant(async () => {
+    const user = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (!user) {
+      const err: any = new Error('No account found with this email address.');
+      err.statusCode = 404;
+      err.code = 'NOT_FOUND';
+      throw err;
+    }
+
+    // Generate random token and secure hash
+    const token = crypto.randomBytes(32).toString('hex');
+    const passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
+    const passwordResetTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+    // Save the hashed token and expiration in database
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetToken,
+        passwordResetTokenExpiresAt,
+      },
+    });
+
+    // Send email using Resend
+    try {
+      await sendForgotPassword(user.email, token);
+      logger.info('AuthService', `Password reset token email sent to ${user.email}`);
+    } catch (emailErr: any) {
+      logger.error('AuthService', 'Password reset email delivery failed', {
+        email: user.email,
+        error: emailErr.message,
+      });
+    }
+  });
+}
+
+/**
+ * Resets user password if reset token is valid and not expired.
+ */
+export async function resetPassword(token: string, passwordPlain: string): Promise<void> {
+  return runBypassingTenant(async () => {
+    const passwordResetToken = crypto.createHash('sha256').update(token).digest('hex');
+
+    const user = await prisma.user.findFirst({
+      where: {
+        passwordResetToken,
+        passwordResetTokenExpiresAt: {
+          gt: new Date(),
+        },
+      },
+    });
+
+    if (!user) {
+      const err: any = new Error('The password reset link is invalid or has expired.');
+      err.statusCode = 400;
+      err.code = 'BAD_REQUEST';
+      throw err;
+    }
+
+    // Hash the new password
+    const passwordHash = await bcrypt.hash(passwordPlain, BCRYPT_SALT_ROUNDS);
+
+    // Update password and clear reset token fields
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        passwordResetToken: null,
+        passwordResetTokenExpiresAt: null,
+      },
+    });
+
+    // Send password reset confirmation email
+    try {
+      await sendResetPassword(user.email);
+    } catch (emailErr: any) {
+      logger.error('AuthService', 'Password reset confirmation email delivery failed', {
+        email: user.email,
+        error: emailErr.message,
+      });
+    }
+  });
+}
+

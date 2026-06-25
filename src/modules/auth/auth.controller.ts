@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { loginUser, rotateRefreshToken, invalidateRefreshToken } from './auth.service';
+import { loginUser, rotateRefreshToken, invalidateRefreshToken, requestPasswordReset, resetPassword as resetPasswordService } from './auth.service';
 
 // Validation Schemas
 export const loginBodySchema = z.object({
@@ -135,3 +135,48 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
     next(error);
   }
 }
+
+// Additional validation schemas
+export const forgotPasswordBodySchema = z.object({
+  email: z.string().email('Please enter a valid email address').trim().toLowerCase(),
+});
+
+export const resetPasswordBodySchema = z.object({
+  token: z.string().min(1, 'Token is required'),
+  password: z.string().min(6, 'Password must be at least 6 characters long'),
+});
+
+/**
+ * Controller endpoint to request password reset.
+ */
+export async function forgotPassword(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { email } = forgotPasswordBodySchema.parse(req.body);
+    await requestPasswordReset(email);
+    res.status(200).json({
+      success: true,
+      data: { message: 'Password reset link sent successfully.' },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Controller endpoint to reset password.
+ */
+export async function resetPassword(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { token, password } = resetPasswordBodySchema.parse(req.body);
+    await resetPasswordService(token, password);
+    res.status(200).json({
+      success: true,
+      data: { message: 'Password reset successfully.' },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
