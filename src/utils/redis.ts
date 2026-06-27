@@ -23,15 +23,64 @@ logger.info('RedisManager', 'Initializing centralized connection handlers...', {
   tls: redisUrl.startsWith('rediss://')
 });
 
+// Track the last encountered Redis error globally to determine if we should abort retries
+let lastGlobalError: Error | null = null;
+
 // Configure base options for resilient connections
 const baseRedisOptions: RedisOptions = {
   maxRetriesPerRequest: null, // Required by BullMQ
-  reconnectOnError: (err: Error) => {
-    logger.warn('RedisManager', 'Reconnect on error check triggered', { error: err.message });
-    return true; // Reconnect for any error
+  lazyConnect: true, // Do not connect on startup to save connections
+  reconnectOnError: function(err: Error) {
+    lastGlobalError = err;
+    const targetError = err.message.toUpperCase();
+    if (targetError.includes('READONLY')) {
+      logger.warn('RedisManager', 'Reconnect on error check triggered for READONLY error', { error: err.message });
+      return true;
+    }
+
+    // Check for terminal errors to proactively disconnect
+    if (
+      targetError.includes('MAX REQUESTS LIMIT EXCEEDED') ||
+      targetError.includes('QUOTA EXCEEDED') ||
+      targetError.includes('AUTH') ||
+      targetError.includes('WRONGPASS') ||
+      targetError.includes('NOAUTH') ||
+      targetError.includes('CREDENTIAL')
+    ) {
+      logger.error('RedisManager', 'Terminal error detected in command execution. Proactively disconnecting client.', { error: err.message });
+      const client = this as any;
+      if (client && typeof client.disconnect === 'function') {
+        process.nextTick(() => {
+          try {
+            client.disconnect();
+            logger.error('RedisManager', 'Successfully disconnected client due to terminal error.');
+          } catch (disconnectErr: any) {
+            logger.error('RedisManager', 'Failed to disconnect client', { error: disconnectErr.message });
+          }
+        });
+      }
+    }
+
+    // Return false for auth, quota, max requests, invalid credentials, and standard failures
+    logger.error('RedisManager', 'No reconnect for error', { error: err.message });
+    return false;
   },
   retryStrategy: (times: number) => {
-    const delay = Math.min(times * 100, 3000); // Backoff up to 3s
+    if (lastGlobalError) {
+      const errMsg = lastGlobalError.message.toUpperCase();
+      if (
+        errMsg.includes('MAX REQUESTS LIMIT EXCEEDED') ||
+        errMsg.includes('QUOTA EXCEEDED') ||
+        errMsg.includes('AUTH') ||
+        errMsg.includes('WRONGPASS') ||
+        errMsg.includes('NOAUTH') ||
+        errMsg.includes('CREDENTIAL')
+      ) {
+        logger.error('RedisManager', `Aborting reconnect retry strategy due to terminal error: ${lastGlobalError.message}`);
+        return null; // Stops retrying completely
+      }
+    }
+    const delay = Math.min(250 * Math.pow(2, times - 1), 30000);
     logger.info('RedisManager', `Retrying connection (attempt #${times}) in ${delay}ms...`);
     return delay;
   }
@@ -53,6 +102,8 @@ export const redisConnection = new IORedis(redisUrl, {
 const registerEventLoggers = (client: IORedis, name: string) => {
   client.on('connect', () => {
     logger.info('RedisManager', `✨ [${name}] Socket connected successfully`);
+    // Clear last error on successful connection
+    lastGlobalError = null;
   });
 
   client.on('ready', () => {
@@ -60,6 +111,7 @@ const registerEventLoggers = (client: IORedis, name: string) => {
   });
 
   client.on('error', (err) => {
+    lastGlobalError = err;
     logger.error('RedisManager', `❌ [${name}] Connection encountered an error`, { error: err.message });
   });
 
@@ -67,27 +119,15 @@ const registerEventLoggers = (client: IORedis, name: string) => {
     logger.warn('RedisManager', `🔌 [${name}] Client is attempting to reconnect...`);
   });
 
+  client.on('close', () => {
+    logger.warn('RedisManager', `🔌 [${name}] Client socket closed`);
+  });
+
   client.on('end', () => {
-    logger.info('RedisManager', `💤 [${name}] Connection pool closed`);
+    logger.info('RedisManager', `💤 [${name}] Connection pool closed (ended)`);
   });
 };
 
 registerEventLoggers(redis, 'CacheClient');
 registerEventLoggers(redisConnection, 'QueueClient');
 
-// Graceful shutdown hooks to prevent socket leaks
-const handleGracefulShutdown = async (signal: string) => {
-  logger.info('RedisManager', `Process received ${signal}. Closing connection pools gracefully...`);
-  try {
-    await Promise.all([
-      redis.quit(),
-      redisConnection.quit()
-    ]);
-    logger.info('RedisManager', 'All connection pools closed cleanly.');
-  } catch (err: any) {
-    logger.error('RedisManager', 'Failed to close connection pools gracefully', { error: err.message });
-  }
-};
-
-process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));

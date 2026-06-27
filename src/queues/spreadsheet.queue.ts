@@ -22,43 +22,55 @@ export const spreadsheetQueue = new Queue('spreadsheet-sync', {
 });
 
 // --- Worker Setup ---
-export const spreadsheetWorker = new Worker(
-  'spreadsheet-sync',
-  async (job) => {
-    logger.info('SpreadsheetWorker', `Processing background sync job: ${job.name} (id: ${job.id})`);
+export let spreadsheetWorker: Worker | undefined = undefined;
 
-    const { connectionId } = job.data;
-    if (!connectionId) {
-      throw new Error('Sync job missing connectionId in payload');
+if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
+  const drainDelay = parseInt(process.env.SPREADSHEET_WORKER_DRAIN_DELAY || '15', 10);
+  const stalledInterval = parseInt(process.env.SPREADSHEET_WORKER_STALLED_INTERVAL || '60000', 10);
+
+  spreadsheetWorker = new Worker(
+    'spreadsheet-sync',
+    async (job) => {
+      logger.info('SpreadsheetWorker', `Processing background sync job: ${job.name} (id: ${job.id})`);
+
+      const { connectionId } = job.data;
+      if (!connectionId) {
+        throw new Error('Sync job missing connectionId in payload');
+      }
+
+      try {
+        const stats = await syncSpreadsheetLeads(connectionId);
+        logger.info('SpreadsheetWorker', `Successfully synced connection ${connectionId}`, { ...stats });
+        return stats;
+      } catch (err: any) {
+        logger.error('SpreadsheetWorker', `Failed to sync connection ${connectionId}`, {
+          error: err.message,
+          stack: err.stack,
+        });
+        throw err;
+      }
+    },
+    {
+      connection: connection as any,
+      drainDelay,
+      stalledInterval,
     }
+  );
 
-    try {
-      const stats = await syncSpreadsheetLeads(connectionId);
-      logger.info('SpreadsheetWorker', `Successfully synced connection ${connectionId}`, { ...stats });
-      return stats;
-    } catch (err: any) {
-      logger.error('SpreadsheetWorker', `Failed to sync connection ${connectionId}`, {
-        error: err.message,
-        stack: err.stack,
-      });
-      throw err;
-    }
-  },
-  { connection: connection as any }
-);
+  // Worker Event Logging
+  spreadsheetWorker.on('completed', (job) => {
+    logger.info('SpreadsheetWorker', `Job ${job.id} completed successfully`);
+  });
 
-// Worker Event Logging
-spreadsheetWorker.on('completed', (job) => {
-  logger.info('SpreadsheetWorker', `Job ${job.id} completed successfully`);
-});
+  spreadsheetWorker.on('failed', (job, err) => {
+    logger.error('SpreadsheetWorker', `Job ${job?.id} failed`, { error: err.message });
+  });
 
-spreadsheetWorker.on('failed', (job, err) => {
-  logger.error('SpreadsheetWorker', `Job ${job?.id} failed`, { error: err.message });
-});
+  spreadsheetWorker.on('error', (err) => {
+    logger.error('SpreadsheetWorker', 'Worker encountered a system error', { error: err.message });
+  });
+}
 
-spreadsheetWorker.on('error', (err) => {
-  logger.error('SpreadsheetWorker', 'Worker encountered a system error', { error: err.message });
-});
 
 // --- Repeatable Job Schedulers ---
 

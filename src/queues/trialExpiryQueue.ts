@@ -22,93 +22,105 @@ export const trialExpiryQueue = new Queue('trial-expiry', {
 });
 
 // --- Worker Setup ---
-export const trialExpiryWorker = new Worker(
-  'trial-expiry',
-  async (job) => {
-    logger.info('TrialExpiryWorker', `Running background trial verification job: ${job.name}`);
+export let trialExpiryWorker: Worker | undefined = undefined;
 
-    if (job.name === 'check-expiring-trials') {
-      await runBypassingTenant(async () => {
-        const now = new Date();
+if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
+  const drainDelay = parseInt(process.env.TRIAL_EXPIRY_WORKER_DRAIN_DELAY || '60', 10);
+  const stalledInterval = parseInt(process.env.TRIAL_EXPIRY_WORKER_STALLED_INTERVAL || '300000', 10);
 
-        // 1. Fetch all agencies in TRIAL state that are not yet marked as expired
-        const trialAgencies = await prisma.agency.findMany({
-          where: {
-            subscriptionStatus: 'TRIAL',
-            isTrialExpired: false,
-          },
-        });
+  trialExpiryWorker = new Worker(
+    'trial-expiry',
+    async (job) => {
+      logger.info('TrialExpiryWorker', `Running background trial verification job: ${job.name}`);
 
-        logger.info('TrialExpiryWorker', `Found ${trialAgencies.length} active trial agencies to inspect.`);
+      if (job.name === 'check-expiring-trials') {
+        await runBypassingTenant(async () => {
+          const now = new Date();
 
-        for (const agency of trialAgencies) {
-          try {
-            if (!agency.trialEndDate) continue;
+          // 1. Fetch all agencies in TRIAL state that are not yet marked as expired
+          const trialAgencies = await prisma.agency.findMany({
+            where: {
+              subscriptionStatus: 'TRIAL',
+              isTrialExpired: false,
+            },
+          });
 
-            const trialEnd = new Date(agency.trialEndDate);
-            
-            // Normalize dates to calculate clean day differences (midnight to midnight)
-            const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-            const endMidnight = new Date(trialEnd.getFullYear(), trialEnd.getMonth(), trialEnd.getDate());
-            
-            const timeDiff = endMidnight.getTime() - todayMidnight.getTime();
-            const daysRemaining = Math.ceil(timeDiff / (24 * 60 * 60 * 1000));
+          logger.info('TrialExpiryWorker', `Found ${trialAgencies.length} active trial agencies to inspect.`);
 
-            logger.info('TrialExpiryWorker', `Checking agency ${agency.name} (${agency.email}) - Days remaining: ${daysRemaining}`);
+          for (const agency of trialAgencies) {
+            try {
+              if (!agency.trialEndDate) continue;
 
-            if (daysRemaining <= 0) {
-              // --- TRIAL EXPIRED ---
-              logger.warn('TrialExpiryWorker', `Agency trial has expired: ${agency.name} (ended: ${agency.trialEndDate})`);
+              const trialEnd = new Date(agency.trialEndDate);
               
-              await prisma.$transaction(async (tx) => {
-                // Update status
-                await tx.agency.update({
-                  where: { id: agency.id },
-                  data: {
-                    isTrialExpired: true,
-                    subscriptionStatus: 'EXPIRED',
-                  },
+              // Normalize dates to calculate clean day differences (midnight to midnight)
+              const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+              const endMidnight = new Date(trialEnd.getFullYear(), trialEnd.getMonth(), trialEnd.getDate());
+              
+              const timeDiff = endMidnight.getTime() - todayMidnight.getTime();
+              const daysRemaining = Math.ceil(timeDiff / (24 * 60 * 60 * 1000));
+
+              logger.info('TrialExpiryWorker', `Checking agency ${agency.name} (${agency.email}) - Days remaining: ${daysRemaining}`);
+
+              if (daysRemaining <= 0) {
+                // --- TRIAL EXPIRED ---
+                logger.warn('TrialExpiryWorker', `Agency trial has expired: ${agency.name} (ended: ${agency.trialEndDate})`);
+                
+                await prisma.$transaction(async (tx) => {
+                  // Update status
+                  await tx.agency.update({
+                    where: { id: agency.id },
+                    data: {
+                      isTrialExpired: true,
+                      subscriptionStatus: 'EXPIRED',
+                    },
+                  });
+
+                  // Invalidate all active refresh tokens for the agency users & client users
+                  await tx.refreshToken.deleteMany({
+                    where: { agencyId: agency.id },
+                  });
                 });
 
-                // Invalidate all active refresh tokens for the agency users & client users
-                await tx.refreshToken.deleteMany({
-                  where: { agencyId: agency.id },
-                });
+                // Send email reminder (0 days remaining = expired template)
+                await sendTrialReminder(agency.name, agency.email, 0);
+
+                logger.info('TrialExpiryWorker', `Successfully expired trial and revoked tokens for ${agency.name}`);
+              } else if (daysRemaining === 7 || daysRemaining === 3 || daysRemaining === 1) {
+                // --- SEND REMINDER EMAILS ---
+                logger.info('TrialExpiryWorker', `Sending ${daysRemaining}-day trial reminder email for ${agency.name}`);
+                await sendTrialReminder(agency.name, agency.email, daysRemaining);
+              }
+            } catch (err: any) {
+              logger.error('TrialExpiryWorker', `Failed to check trial status for agency ${agency.name} (${agency.id})`, {
+                error: err.message,
               });
-
-              // Send email reminder (0 days remaining = expired template)
-              await sendTrialReminder(agency.name, agency.email, 0);
-
-              logger.info('TrialExpiryWorker', `Successfully expired trial and revoked tokens for ${agency.name}`);
-            } else if (daysRemaining === 7 || daysRemaining === 3 || daysRemaining === 1) {
-              // --- SEND REMINDER EMAILS ---
-              logger.info('TrialExpiryWorker', `Sending ${daysRemaining}-day trial reminder email for ${agency.name}`);
-              await sendTrialReminder(agency.name, agency.email, daysRemaining);
             }
-          } catch (err: any) {
-            logger.error('TrialExpiryWorker', `Failed to check trial status for agency ${agency.name} (${agency.id})`, {
-              error: err.message,
-            });
           }
-        }
-      });
+        });
+      }
+    },
+    {
+      connection: connection as any,
+      drainDelay,
+      stalledInterval,
     }
-  },
-  { connection: connection as any }
-);
+  );
 
-// Logging
-trialExpiryWorker.on('completed', (job) => {
-  logger.info('TrialExpiryWorker', `Job ${job.id} completed successfully`);
-});
+  // Logging
+  trialExpiryWorker.on('completed', (job) => {
+    logger.info('TrialExpiryWorker', `Job ${job.id} completed successfully`);
+  });
 
-trialExpiryWorker.on('failed', (job, err) => {
-  logger.error('TrialExpiryWorker', `Job ${job?.id} failed`, { error: err.message });
-});
+  trialExpiryWorker.on('failed', (job, err) => {
+    logger.error('TrialExpiryWorker', `Job ${job?.id} failed`, { error: err.message });
+  });
 
-trialExpiryWorker.on('error', (err) => {
-  logger.error('TrialExpiryWorker', 'System error encountered inside worker', { error: err.message });
-});
+  trialExpiryWorker.on('error', (err) => {
+    logger.error('TrialExpiryWorker', 'System error encountered inside worker', { error: err.message });
+  });
+}
+
 
 /**
  * Registers the repeatable daily trial sweep job.

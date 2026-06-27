@@ -19,16 +19,20 @@ import { errorHandler } from './middleware/errorHandler';
 import { requireRoles } from './middleware/rbac';
 import { initializeSocketIO } from './sockets';
 import { generalLimiter } from './middleware/rateLimiter';
+import { logger } from './utils/logger';
 
 // Bull Board imports
 import { createBullBoard } from '@bull-board/api';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
-import { metaLeadsQueue, metaLeadsFailedQueue } from './queues/metaLeadsQueue';
-import { tokenRefreshQueue } from './queues/tokenRefreshQueue';
-import { notificationsQueue } from './queues/notificationsQueue';
-import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs } from './queues/spreadsheet.queue';
-import { trialExpiryQueue, scheduleDailyTrialSweep } from './queues/trialExpiryQueue';
+
+// Queues, Schedulers, and Workers
+import { redis, redisConnection } from './utils/redis';
+import { metaLeadsQueue, metaLeadsFailedQueue, scheduleMetaSync, metaLeadsWorker } from './queues/metaLeadsQueue';
+import { tokenRefreshQueue, scheduleTokenRefresh, tokenRefreshWorker } from './queues/tokenRefreshQueue';
+import { notificationsQueue, notificationsWorker } from './queues/notificationsQueue';
+import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs, spreadsheetWorker } from './queues/spreadsheet.queue';
+import { trialExpiryQueue, scheduleDailyTrialSweep, trialExpiryWorker } from './queues/trialExpiryQueue';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -162,17 +166,122 @@ app.use(errorHandler);
 if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, async () => {
     console.log(`🚀 GrowPhil CRM API is running at http://localhost:${PORT}`);
-    try {
-      await cleanupOrphanedSpreadsheetJobs();
-    } catch (err: any) {
-      console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
-    }
-    try {
-      await scheduleDailyTrialSweep();
-    } catch (err: any) {
-      console.error('Failed to schedule startup daily trial sweep:', err.message);
+    
+    const bgWorkersEnabled = process.env.ENABLE_BACKGROUND_WORKERS === 'true';
+    console.log(`Background workers enabled: ${bgWorkersEnabled}`);
+    
+    if (bgWorkersEnabled) {
+      logger.info('AppStartup', 'Initializing background workers and repeatable schedulers...');
+      try {
+        await cleanupOrphanedSpreadsheetJobs();
+      } catch (err: any) {
+        console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
+      }
+      try {
+        await scheduleDailyTrialSweep();
+      } catch (err: any) {
+        console.error('Failed to schedule startup daily trial sweep:', err.message);
+      }
+      try {
+        await scheduleTokenRefresh();
+      } catch (err: any) {
+        console.error('Failed to schedule startup token refresh:', err.message);
+      }
+      try {
+        await scheduleMetaSync();
+      } catch (err: any) {
+        console.error('Failed to schedule startup Meta sync cron:', err.message);
+      }
+    } else {
+      console.log('ℹ Background workers and schedulers are disabled (local development default).');
     }
   });
+
+  let isShuttingDown = false;
+
+  const gracefulShutdown = async (signal: string) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`\n🛑 [Shutdown] Received ${signal}. Starting graceful shutdown...`);
+
+    // 1. Close HTTP Server
+    if (server.listening) {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          console.log('✔ [Shutdown] HTTP server closed');
+          resolve();
+        });
+      });
+    }
+
+    // 2. Close all workers first (stops processing & polling)
+    console.log('⏳ [Shutdown] Closing workers...');
+    const workers = [
+      { name: 'metaLeadsWorker', worker: metaLeadsWorker },
+      { name: 'tokenRefreshWorker', worker: tokenRefreshWorker },
+      { name: 'notificationsWorker', worker: notificationsWorker },
+      { name: 'spreadsheetWorker', worker: spreadsheetWorker },
+      { name: 'trialExpiryWorker', worker: trialExpiryWorker },
+    ];
+
+    for (const item of workers) {
+      if (item.worker) {
+        try {
+          await item.worker.close();
+          console.log(`✔ [Shutdown] Worker closed: ${item.name}`);
+        } catch (err: any) {
+          console.error(`❌ [Shutdown] Failed to close worker: ${item.name}`, err.message);
+        }
+      }
+    }
+
+    // 3. Close all queues
+    console.log('⏳ [Shutdown] Closing queues...');
+    const queues = [
+      { name: 'metaLeadsQueue', queue: metaLeadsQueue },
+      { name: 'metaLeadsFailedQueue', queue: metaLeadsFailedQueue },
+      { name: 'tokenRefreshQueue', queue: tokenRefreshQueue },
+      { name: 'notificationsQueue', queue: notificationsQueue },
+      { name: 'spreadsheetQueue', queue: spreadsheetQueue },
+      { name: 'trialExpiryQueue', queue: trialExpiryQueue },
+    ];
+
+    for (const item of queues) {
+      try {
+        await item.queue.close();
+        console.log(`✔ [Shutdown] Queue closed: ${item.name}`);
+      } catch (err: any) {
+        console.error(`❌ [Shutdown] Failed to close queue: ${item.name}`, err.message);
+      }
+    }
+
+    // 4. Quit Redis connections
+    console.log('⏳ [Shutdown] Closing Redis connection pools...');
+    try {
+      await Promise.all([
+        redis.quit(),
+        redisConnection.quit()
+      ]);
+      console.log('✔ [Shutdown] Redis connections closed cleanly');
+    } catch (err: any) {
+      console.error('❌ [Shutdown] Failed to close Redis connections', err.message);
+    }
+
+    console.log('👋 [Shutdown] Graceful shutdown complete. Exiting.');
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
+// Global safety handler for unhandled promise rejections (prevents crashes from transient Redis/network socket drops)
+process.on('unhandledRejection', (reason: any) => {
+  logger.error('UnhandledRejection', 'An unhandled promise rejection occurred', {
+    message: reason?.message || reason,
+    stack: reason?.stack
+  });
+});
+
 export default app;
+

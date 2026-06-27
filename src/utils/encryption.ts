@@ -24,10 +24,25 @@ if (KEY.length !== 32) {
 }
 
 /**
+ * Checks if a string matches the encrypted payload format: "ivHex:tagHex:encryptedHex"
+ */
+export function isEncrypted(text: string): boolean {
+  if (typeof text !== 'string') return false;
+  const parts = text.split(':');
+  if (parts.length !== 3) return false;
+  const [iv, tag, cipher] = parts;
+  const hexRegex = /^[0-9a-fA-F]+$/;
+  return iv.length === 24 && tag.length === 32 && hexRegex.test(iv) && hexRegex.test(tag) && hexRegex.test(cipher);
+}
+
+/**
  * Encrypts clear text using AES-256-GCM.
  * Returns a formatted string: "ivHex:tagHex:encryptedHex"
  */
 export function encrypt(text: string): string {
+  if (isEncrypted(text)) {
+    return text;
+  }
   const iv = crypto.randomBytes(IV_LENGTH);
   const cipher = crypto.createCipheriv(ALGORITHM, KEY, iv);
   
@@ -44,6 +59,9 @@ export function encrypt(text: string): string {
  * Expects formatted string: "ivHex:tagHex:encryptedHex"
  */
 export function decrypt(cipherText: string): string {
+  if (!isEncrypted(cipherText)) {
+    return cipherText;
+  }
   const parts = cipherText.split(':');
   if (parts.length !== 3) {
     throw new Error('Invalid encryption payload. Expected format iv:tag:encrypted');
@@ -62,3 +80,4 @@ export function decrypt(cipherText: string): string {
 
   return decrypted;
 }
+

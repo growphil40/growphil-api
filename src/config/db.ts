@@ -20,34 +20,63 @@ const modelTenantFields: Record<string, { agencyField?: string; clientField?: st
   SpreadsheetImportHistory: { clientField: 'clientId' },
 };
 
+/**
+ * Recursively decycles and decrypts specified fields (accessToken, refreshToken, metaAccessToken)
+ * within any query result, including nested inclusions.
+ */
+function decryptNestedFields(obj: any, visited = new WeakSet()) {
+  if (!obj || typeof obj !== 'object') {
+    return;
+  }
+
+  if (visited.has(obj)) {
+    return;
+  }
+  visited.add(obj);
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      decryptNestedFields(item, visited);
+    }
+    return;
+  }
+
+  // Decrypt fields if present
+  if (typeof obj.accessToken === 'string') {
+    try {
+      obj.accessToken = decrypt(obj.accessToken);
+    } catch (error) {
+      // Ignore decryption failure to remain backward compatible / fallback to plaintext
+    }
+  }
+  if (typeof obj.refreshToken === 'string') {
+    try {
+      obj.refreshToken = decrypt(obj.refreshToken);
+    } catch (error) {
+      // Ignore
+    }
+  }
+  if (typeof obj.metaAccessToken === 'string') {
+    try {
+      obj.metaAccessToken = decrypt(obj.metaAccessToken);
+    } catch (error) {
+      // Ignore
+    }
+  }
+
+  // Recursively decrypt nested objects/relations
+  for (const key of Object.keys(obj)) {
+    if (obj[key] && typeof obj[key] === 'object') {
+      decryptNestedFields(obj[key], visited);
+    }
+  }
+}
+
 prisma.$use(async (params, next) => {
   const modelName = params.model as string;
-  if (!modelName) {
-    return next(params);
-  }
 
-  const mapping = modelTenantFields[modelName];
-  if (!mapping) {
-    return next(params);
-  }
-
-  const context = getTenantContext();
-
-  // If bypass is active, skip all checks
-  if (context?.bypass) {
-    return next(params);
-  }
-
-  // 1. Enforce that tenant context exists
-  if (!context || (!context.agencyId && !context.clientId)) {
-    throw new Error(
-      `Multi-tenancy violation: Query executed on '${modelName}' without an active tenant context (agencyId or clientId).`
-    );
-  }
-
-  const { agencyId, clientId } = context;
-
-  // 2. Handle Encrypted Fields for Writes
+  // 1. Handle Encrypted Fields for Writes (Encrypt inputs if applicable)
+  // This runs for ALL writes, even if tenant validation is bypassed
   if (modelName === 'Client' && params.args?.data) {
     const data = params.args.data;
     if (data.metaAccessToken) {
@@ -65,115 +94,91 @@ prisma.$use(async (params, next) => {
     }
   }
 
-  // 3. Inject Tenant Filters for Reads and Writes
-  const readActions = ['findUnique', 'findFirst', 'findMany', 'count', 'aggregate', 'groupBy'];
-  const writeActions = ['update', 'updateMany', 'delete', 'deleteMany'];
-  const createActions = ['create', 'createMany'];
+  // 2. Multi-Tenancy Logic (Only applied if model mapping exists and context is not bypassed)
+  const context = getTenantContext();
+  const mapping = modelName ? modelTenantFields[modelName] : undefined;
 
-  if (readActions.includes(params.action) || writeActions.includes(params.action)) {
-    // If findUnique, convert to findFirst so we can add tenant filters
-    if (params.action === 'findUnique') {
-      params.action = 'findFirst';
+  if (mapping && !context?.bypass) {
+    // Enforce that tenant context exists
+    if (!context || (!context.agencyId && !context.clientId)) {
+      throw new Error(
+        `Multi-tenancy violation: Query executed on '${modelName}' without an active tenant context (agencyId or clientId).`
+      );
     }
 
-    params.args = params.args || {};
-    params.args.where = params.args.where || {};
+    const { agencyId, clientId } = context;
 
-    if (mapping.selfIdField && agencyId) {
-      // e.g. Agency table itself
-      params.args.where[mapping.selfIdField] = agencyId;
-    } else {
-      // Standard table
-      if (clientId && mapping.clientField) {
-        // Client-scoped query (e.g. client user logged in)
-        params.args.where[mapping.clientField] = clientId;
-      } else if (agencyId && mapping.agencyField) {
-        // Agency-scoped query (e.g. agency user logged in)
-        params.args.where[mapping.agencyField] = agencyId;
-      } else {
-        throw new Error(
-          `Multi-tenancy violation: Mismatch between context keys (agencyId: ${agencyId}, clientId: ${clientId}) and model '${modelName}' tenant fields.`
-        );
+    // Inject Tenant Filters for Reads and Writes
+    const readActions = ['findUnique', 'findFirst', 'findMany', 'count', 'aggregate', 'groupBy'];
+    const writeActions = ['update', 'updateMany', 'delete', 'deleteMany'];
+    const createActions = ['create', 'createMany'];
+
+    if (readActions.includes(params.action) || writeActions.includes(params.action)) {
+      // If findUnique, convert to findFirst so we can add tenant filters
+      if (params.action === 'findUnique') {
+        params.action = 'findFirst';
       }
-    }
-  } else if (createActions.includes(params.action)) {
-    // Inject tenant ID on creation
-    params.args = params.args || {};
-    
-    const applyTenantToData = (dataObj: any) => {
-      if (!dataObj) return;
-      
-      if (mapping.selfIdField) {
-        if (agencyId) dataObj[mapping.selfIdField] = agencyId;
+
+      params.args = params.args || {};
+      params.args.where = params.args.where || {};
+
+      if (mapping.selfIdField && agencyId) {
+        // e.g. Agency table itself
+        params.args.where[mapping.selfIdField] = agencyId;
       } else {
+        // Standard table
         if (clientId && mapping.clientField) {
-          dataObj[mapping.clientField] = clientId;
-        }
-        if (agencyId && mapping.agencyField) {
-          dataObj[mapping.agencyField] = agencyId;
+          // Client-scoped query (e.g. client user logged in)
+          params.args.where[mapping.clientField] = clientId;
+        } else if (agencyId && mapping.agencyField) {
+          // Agency-scoped query (e.g. agency user logged in)
+          params.args.where[mapping.agencyField] = agencyId;
+        } else {
+          throw new Error(
+            `Multi-tenancy violation: Mismatch between context keys (agencyId: ${agencyId}, clientId: ${clientId}) and model '${modelName}' tenant fields.`
+          );
         }
       }
-    };
+    } else if (createActions.includes(params.action)) {
+      // Inject tenant ID on creation
+      params.args = params.args || {};
+      
+      const applyTenantToData = (dataObj: any) => {
+        if (!dataObj) return;
+        
+        if (mapping.selfIdField) {
+          if (agencyId) dataObj[mapping.selfIdField] = agencyId;
+        } else {
+          if (clientId && mapping.clientField) {
+            dataObj[mapping.clientField] = clientId;
+          }
+          if (agencyId && mapping.agencyField) {
+            dataObj[mapping.agencyField] = agencyId;
+          }
+        }
+      };
 
-    if (params.action === 'createMany') {
-      if (Array.isArray(params.args.data)) {
-        params.args.data.forEach(applyTenantToData);
+      if (params.action === 'createMany') {
+        if (Array.isArray(params.args.data)) {
+          params.args.data.forEach(applyTenantToData);
+        }
+      } else {
+        applyTenantToData(params.args.data);
       }
-    } else {
-      applyTenantToData(params.args.data);
     }
   }
 
-  // 4. Execute Query
+  // 3. Execute Query
   const result = await next(params);
 
-  // 5. Handle Encrypted Fields Decryption for Client Reads
-  if (modelName === 'Client' && result) {
-    const decryptClient = (clientObj: any) => {
-      if (clientObj && clientObj.metaAccessToken) {
-        try {
-          clientObj.metaAccessToken = decrypt(clientObj.metaAccessToken);
-        } catch (error) {
-          console.error(`Failed to decrypt metaAccessToken for Client ID ${clientObj.id}:`, error);
-        }
-      }
-    };
-
-    if (Array.isArray(result)) {
-      result.forEach(decryptClient);
-    } else {
-      decryptClient(result);
-    }
-  }
-
-  if (modelName === 'GoogleConnection' && result) {
-    const decryptGoogle = (connObj: any) => {
-      if (connObj) {
-        if (connObj.accessToken) {
-          try {
-            connObj.accessToken = decrypt(connObj.accessToken);
-          } catch (error) {
-            console.error(`Failed to decrypt accessToken for GoogleConnection ID ${connObj.id}:`, error);
-          }
-        }
-        if (connObj.refreshToken) {
-          try {
-            connObj.refreshToken = decrypt(connObj.refreshToken);
-          } catch (error) {
-            console.error(`Failed to decrypt refreshToken for GoogleConnection ID ${connObj.id}:`, error);
-          }
-        }
-      }
-    };
-
-    if (Array.isArray(result)) {
-      result.forEach(decryptGoogle);
-    } else {
-      decryptGoogle(result);
-    }
+  // 4. Handle Decryption for Reads (Recursively decrypt result values if applicable)
+  // This runs for ALL reads, even if tenant validation is bypassed
+  if (result) {
+    decryptNestedFields(result);
   }
 
   return result;
+
 });
 
 export default prisma;
