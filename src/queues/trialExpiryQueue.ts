@@ -24,9 +24,9 @@ export const trialExpiryQueue = new Queue('trial-expiry', {
 // --- Worker Setup ---
 export let trialExpiryWorker: Worker | undefined = undefined;
 
-if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
+if (process.env.ENABLE_TRIAL_WORKER === 'true') {
   const drainDelay = parseInt(process.env.TRIAL_EXPIRY_WORKER_DRAIN_DELAY || '60', 10);
-  const stalledInterval = parseInt(process.env.TRIAL_EXPIRY_WORKER_STALLED_INTERVAL || '300000', 10);
+  const stalledInterval = parseInt(process.env.TRIAL_EXPIRY_WORKER_STALLED_INTERVAL || '900000', 10);
 
   trialExpiryWorker = new Worker(
     'trial-expiry',

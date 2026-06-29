@@ -20,9 +20,9 @@ export const notificationsQueue = new Queue('notifications', {
 
 export let notificationsWorker: Worker | undefined = undefined;
 
-if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
-  const drainDelay = parseInt(process.env.NOTIFICATIONS_WORKER_DRAIN_DELAY || '5', 10);
-  const stalledInterval = parseInt(process.env.NOTIFICATIONS_WORKER_STALLED_INTERVAL || '30000', 10);
+if (process.env.ENABLE_NOTIFICATION_WORKER === 'true') {
+  const drainDelay = parseInt(process.env.NOTIFICATIONS_WORKER_DRAIN_DELAY || '60', 10);
+  const stalledInterval = parseInt(process.env.NOTIFICATIONS_WORKER_STALLED_INTERVAL || '300000', 10);
 
   notificationsWorker = new Worker(
     'notifications',

@@ -24,9 +24,9 @@ export const spreadsheetQueue = new Queue('spreadsheet-sync', {
 // --- Worker Setup ---
 export let spreadsheetWorker: Worker | undefined = undefined;
 
-if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
-  const drainDelay = parseInt(process.env.SPREADSHEET_WORKER_DRAIN_DELAY || '15', 10);
-  const stalledInterval = parseInt(process.env.SPREADSHEET_WORKER_STALLED_INTERVAL || '60000', 10);
+if (process.env.ENABLE_SPREADSHEET_WORKER === 'true') {
+  const drainDelay = parseInt(process.env.SPREADSHEET_WORKER_DRAIN_DELAY || '60', 10);
+  const stalledInterval = parseInt(process.env.SPREADSHEET_WORKER_STALLED_INTERVAL || '300000', 10);
 
   spreadsheetWorker = new Worker(
     'spreadsheet-sync',

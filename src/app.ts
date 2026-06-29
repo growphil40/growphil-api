@@ -159,6 +159,17 @@ app.use('/v1/agencies', generalLimiter, superAdminAgenciesRouter);
 // Queue Dashboard (Protected, Super Admin only)
 app.use('/admin/queues', authMiddleware, requireRoles(['super_admin']), serverAdapter.getRouter());
 
+// System diagnostics endpoint for background workers
+app.get('/system/workers', (req: Request, res: Response) => {
+  res.status(200).json({
+    spreadsheetWorker: spreadsheetWorker ? 'running' : 'disabled',
+    metaWorker: metaLeadsWorker ? 'running' : 'disabled',
+    notificationWorker: notificationsWorker ? 'running' : 'disabled',
+    tokenRefreshWorker: tokenRefreshWorker ? 'running' : 'disabled',
+    trialWorker: trialExpiryWorker ? 'running' : 'disabled',
+  });
+});
+
 // Standardized Error Handler (Catches validation, auth, and system errors)
 app.use(errorHandler);
 
@@ -167,33 +178,52 @@ if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, async () => {
     console.log(`🚀 GrowPhil CRM API is running at http://localhost:${PORT}`);
     
-    const bgWorkersEnabled = process.env.ENABLE_BACKGROUND_WORKERS === 'true';
-    console.log(`Background workers enabled: ${bgWorkersEnabled}`);
-    
-    if (bgWorkersEnabled) {
-      logger.info('AppStartup', 'Initializing background workers and repeatable schedulers...');
+    const enableSpreadsheet = process.env.ENABLE_SPREADSHEET_WORKER === 'true';
+    const enableMeta = process.env.ENABLE_META_WORKER === 'true';
+    const enableNotification = process.env.ENABLE_NOTIFICATION_WORKER === 'true';
+    const enableTokenRefresh = process.env.ENABLE_TOKEN_REFRESH_WORKER === 'true';
+    const enableTrial = process.env.ENABLE_TRIAL_WORKER === 'true';
+
+    console.log('\n========================================');
+    console.log('Background Workers Startup Status:');
+    console.log(`Spreadsheet Worker: ${enableSpreadsheet ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Meta Worker: ${enableMeta ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Notification Worker: ${enableNotification ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Token Refresh Worker: ${enableTokenRefresh ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Trial Worker: ${enableTrial ? 'ENABLED' : 'DISABLED'}`);
+    console.log('========================================\n');
+
+    if (enableSpreadsheet) {
+      logger.info('AppStartup', 'Initializing spreadsheet worker tasks...');
       try {
         await cleanupOrphanedSpreadsheetJobs();
       } catch (err: any) {
         console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
       }
+    }
+    if (enableTrial) {
+      logger.info('AppStartup', 'Scheduling daily trial sweep cron...');
       try {
         await scheduleDailyTrialSweep();
       } catch (err: any) {
         console.error('Failed to schedule startup daily trial sweep:', err.message);
       }
+    }
+    if (enableTokenRefresh) {
+      logger.info('AppStartup', 'Scheduling daily token refresh cron...');
       try {
         await scheduleTokenRefresh();
       } catch (err: any) {
         console.error('Failed to schedule startup token refresh:', err.message);
       }
+    }
+    if (enableMeta) {
+      logger.info('AppStartup', 'Scheduling Meta ad accounts sync cron...');
       try {
         await scheduleMetaSync();
       } catch (err: any) {
         console.error('Failed to schedule startup Meta sync cron:', err.message);
       }
-    } else {
-      console.log('ℹ Background workers and schedulers are disabled (local development default).');
     }
   });
 

@@ -36,9 +36,9 @@ export const metaLeadsFailedQueue = new Queue('meta-leads-failed', {
 // ─── Main Worker ─────────────────────────────────────────────────────────────
 export let metaLeadsWorker: Worker | undefined = undefined;
 
-if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
-  const drainDelay = parseInt(process.env.META_LEADS_WORKER_DRAIN_DELAY || '5', 10);
-  const stalledInterval = parseInt(process.env.META_LEADS_WORKER_STALLED_INTERVAL || '30000', 10);
+if (process.env.ENABLE_META_WORKER === 'true') {
+  const drainDelay = parseInt(process.env.META_LEADS_WORKER_DRAIN_DELAY || '30', 10);
+  const stalledInterval = parseInt(process.env.META_LEADS_WORKER_STALLED_INTERVAL || '300000', 10);
 
   metaLeadsWorker = new Worker(
     'meta-leads',

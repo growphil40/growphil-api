@@ -23,9 +23,9 @@ export const tokenRefreshQueue = new Queue('token-refresh', {
 
 export let tokenRefreshWorker: Worker | undefined = undefined;
 
-if (process.env.ENABLE_BACKGROUND_WORKERS === 'true') {
+if (process.env.ENABLE_TOKEN_REFRESH_WORKER === 'true') {
   const drainDelay = parseInt(process.env.TOKEN_REFRESH_WORKER_DRAIN_DELAY || '60', 10);
-  const stalledInterval = parseInt(process.env.TOKEN_REFRESH_WORKER_STALLED_INTERVAL || '300000', 10);
+  const stalledInterval = parseInt(process.env.TOKEN_REFRESH_WORKER_STALLED_INTERVAL || '900000', 10);
 
   tokenRefreshWorker = new Worker(
     'token-refresh',
