@@ -6,6 +6,7 @@ import { loginUser, rotateRefreshToken, invalidateRefreshToken, requestPasswordR
 export const loginBodySchema = z.object({
   email: z.string().email('Please enter a valid email address').trim().toLowerCase(),
   password: z.string().min(6, 'Password must be at least 6 characters long'),
+  rememberMe: z.boolean().optional(),
 });
 
 export const refreshBodySchema = z.object({
@@ -21,16 +22,16 @@ export const logoutBodySchema = z.object({
  */
 export async function login(req: Request, res: Response, next: NextFunction) {
   try {
-    const { email, password } = loginBodySchema.parse(req.body);
+    const { email, password, rememberMe } = loginBodySchema.parse(req.body);
     
-    const authData = await loginUser(email, password);
+    const authData = await loginUser(email, password, rememberMe);
 
     // Set the refresh token as an httpOnly cookie
     res.cookie('refreshToken', authData.refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: (authData.expiresInDays ?? 7) * 24 * 60 * 60 * 1000,
     });
     
     res.status(200).json({
@@ -81,7 +82,7 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      maxAge: (newTokens.expiresInDays ?? 7) * 24 * 60 * 60 * 1000,
     });
     
     res.status(200).json({

@@ -42,16 +42,16 @@ export async function generateAccessToken(payload: TokenPayload): Promise<string
  * Generate a random 64-byte hex refresh token and save it to the database.
  * Returns a compound token string: "id:secret"
  */
-export async function createRefreshToken(userId: string, tenantId: string, tenantType: 'agency' | 'client'): Promise<string> {
+export async function createRefreshToken(userId: string, tenantId: string, tenantType: 'agency' | 'client', expiresInDays = 7): Promise<string> {
   // Generate random 64-byte hex secret
   const secret = crypto.randomBytes(64).toString('hex');
   
   // Bcrypt hash the secret (cost 12)
   const tokenHash = await bcrypt.hash(secret, BCRYPT_SALT_ROUNDS);
   
-  // Set expiry to 7 days
+  // Set expiry
   const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 7);
+  expiresAt.setDate(expiresAt.getDate() + expiresInDays);
 
   // We bypass tenant checks for token creation because this is an auth system write
   return runBypassingTenant(async () => {
@@ -95,7 +95,7 @@ async function getAgencyForUser(user: { agencyId?: string | null; clientId?: str
 /**
  * Validates a user's email and password, returning tokens and user details.
  */
-export async function loginUser(email: string, passwordPlain: string) {
+export async function loginUser(email: string, passwordPlain: string, rememberMe = false) {
   return runBypassingTenant(async () => {
     // 1. Fetch user by email
     const user = await prisma.user.findUnique({
@@ -170,12 +170,15 @@ export async function loginUser(email: string, passwordPlain: string) {
       isTrialExpired,
     });
 
+    const expiresInDays = rememberMe ? 180 : 7;
+
     // 5. Generate refresh token
-    const refreshToken = await createRefreshToken(user.id, tenantId, tenantType);
+    const refreshToken = await createRefreshToken(user.id, tenantId, tenantType, expiresInDays);
 
     return {
       accessToken,
       refreshToken,
+      expiresInDays,
       user: {
         id: user.id,
         email: user.email,
@@ -295,6 +298,11 @@ export async function rotateRefreshToken(compoundToken: string) {
     const trialEndDate = associatedAgency?.trialEndDate ? associatedAgency.trialEndDate.toISOString() : null;
     const isTrialExpired = associatedAgency?.isTrialExpired || false;
 
+    // Calculate original lifespan of the token being rotated
+    const originalDurationMs = tokenRecord.expiresAt.getTime() - tokenRecord.createdAt.getTime();
+    const isRememberMe = originalDurationMs > 8 * 24 * 60 * 60 * 1000;
+    const expiresInDays = isRememberMe ? 180 : 7;
+
     // 6. Generate new access & refresh tokens
     const newAccessToken = await generateAccessToken({
       userId: user.id,
@@ -307,11 +315,12 @@ export async function rotateRefreshToken(compoundToken: string) {
       isTrialExpired,
     });
 
-    const newRefreshToken = await createRefreshToken(user.id, tenantId, tenantType);
+    const newRefreshToken = await createRefreshToken(user.id, tenantId, tenantType, expiresInDays);
 
     return {
       accessToken: newAccessToken,
       refreshToken: newRefreshToken,
+      expiresInDays,
     };
   });
 }
