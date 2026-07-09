@@ -289,9 +289,17 @@ export async function rotateRefreshToken(compoundToken: string) {
     }
 
     // 5. Delete old refresh token record (Token Rotation)
-    await prisma.refreshToken.delete({
-      where: { id: tokenId },
-    });
+    try {
+      await prisma.refreshToken.delete({
+        where: { id: tokenId },
+      });
+    } catch (e: any) {
+      // Ignore if it was already deleted (e.g. by a concurrent request)
+      logger.warn('AuthService', 'Failed to delete refresh token during rotation (possibly already rotated)', {
+        tokenId,
+        error: e.message
+      });
+    }
 
     const subscriptionStatus = associatedAgency?.subscriptionStatus || null;
     const subscriptionPlan = associatedAgency?.subscriptionPlan || null;
