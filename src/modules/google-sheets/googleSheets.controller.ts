@@ -11,7 +11,6 @@ import { fetchUserSpreadsheets } from './googleDrive.service';
 import { fetchSpreadsheetTabs, fetchSheetValues, fetchSpreadsheetMetadata } from './spreadsheet.service';
 import { saveColumnMappings, getMappingsForConnection } from './spreadsheetMapping.service';
 import { syncSpreadsheetLeads } from './spreadsheetSync.service';
-import { addSpreadsheetSyncJob, removeSpreadsheetSyncJob } from '../../queues/spreadsheet.queue';
 import { logger } from '../../utils/logger';
 import { extractSpreadsheetId } from './spreadsheetUrl.utils';
 
@@ -225,9 +224,6 @@ export async function createConnection(req: Request, res: Response, next: NextFu
       },
     });
 
-    // Schedule BullMQ repeatable job
-    await addSpreadsheetSyncJob(connection.id, syncInterval);
-
     res.status(201).json({
       success: true,
       data: connection,
@@ -367,15 +363,6 @@ export async function updateConnection(req: Request, res: Response, next: NextFu
       data: updates,
     });
 
-    // Handle background job configuration modifications
-    if (updated.syncEnabled) {
-      // Re-add/update repeatable schedule
-      await addSpreadsheetSyncJob(updated.id, updated.syncInterval);
-    } else {
-      // Remove schedule if sync disabled
-      await removeSpreadsheetSyncJob(updated.id);
-    }
-
     res.status(200).json({
       success: true,
       data: updated,
@@ -406,9 +393,6 @@ export async function deleteConnection(req: Request, res: Response, next: NextFu
       res.status(404).json({ success: false, error: 'Spreadsheet connection not found.' });
       return;
     }
-
-    // Remove background sync schedule
-    await removeSpreadsheetSyncJob(connectionId);
 
     // Delete record from database
     await db.spreadsheetConnection.delete({
@@ -604,21 +588,7 @@ export async function disconnectGoogle(req: Request, res: Response, next: NextFu
 
     logger.info('GoogleDisconnect', 'Starting disconnect flow for client', { clientId });
 
-    // 1. Find all active spreadsheet connections to stop repeat sync jobs
-    const connections = await db.spreadsheetConnection.findMany({
-      where: { clientId },
-    });
 
-    logger.info('GoogleDisconnect', `Found ${connections.length} spreadsheet connections to clean up`);
-
-    for (const conn of connections) {
-      try {
-        logger.info('GoogleDisconnect', `Stopping repeatable sync job for connection`, { connectionId: conn.id });
-        await removeSpreadsheetSyncJob(conn.id);
-      } catch (jobErr: any) {
-        logger.warn('GoogleDisconnect', `Failed to stop sync job for connection ${conn.id} (ignored)`, { error: jobErr.message });
-      }
-    }
 
     // 2. Retrieve google connection credentials to revoke OAuth token
     const googleConn = await db.googleConnection.findFirst({

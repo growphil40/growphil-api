@@ -23,15 +23,15 @@ const authLimiter = rateLimit({
   },
 });
 
-// Apply rate limiting to all auth endpoints
-router.post('/register', authLimiter, register);
+// Apply rate limiting to all auth endpoints (Disabled)
+router.post('/register', register);
 router.get('/verify-email', verifyEmail);
-router.post('/verify-email/resend', authLimiter, resendVerification);
-router.post('/login', authLimiter, login);
-router.post('/refresh', authLimiter, refresh);
-router.post('/logout', authLimiter, logout);
-router.post('/forgot-password', authLimiter, forgotPassword);
-router.post('/reset-password', authLimiter, resetPassword);
+router.post('/verify-email/resend', resendVerification);
+router.post('/login', login);
+router.post('/refresh', refresh);
+router.post('/logout', logout);
+router.post('/forgot-password', forgotPassword);
+router.post('/reset-password', resetPassword);
 
 export default router;
 export { router as authRouter };
