@@ -8,18 +8,20 @@ import { redisConnection } from '../utils/redis';
 const connection = redisConnection;
 
 // --- Queue Setup ---
-export const trialExpiryQueue = new Queue('trial-expiry', {
-  connection: connection as any,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 5000,
-    },
-    removeOnComplete: { count: 100 },
-    removeOnFail: { count: 100 },
-  },
-});
+export const trialExpiryQueue = process.env.ENABLE_TRIAL_WORKER === 'true'
+  ? new Queue('trial-expiry', {
+      connection: connection as any,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 5000,
+        },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 100 },
+      },
+    })
+  : null;
 
 // --- Worker Setup ---
 export let trialExpiryWorker: Worker | undefined = undefined;
@@ -126,6 +128,10 @@ if (process.env.ENABLE_TRIAL_WORKER === 'true') {
  * Registers the repeatable daily trial sweep job.
  */
 export async function scheduleDailyTrialSweep() {
+  if (!trialExpiryQueue) {
+    logger.info('TrialExpiryQueue', 'Daily trial sweep cron not scheduled (queue is disabled)');
+    return;
+  }
   try {
     // Register repeatable job at 01:00 AM daily
     await trialExpiryQueue.add(

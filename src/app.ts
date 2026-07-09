@@ -27,7 +27,7 @@ import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
 import { ExpressAdapter } from '@bull-board/express';
 
 // Queues, Schedulers, and Workers
-import { redis, redisConnection } from './utils/redis';
+import { redisConnection } from './utils/redis';
 import { metaLeadsQueue, metaLeadsFailedQueue, scheduleMetaSync, metaLeadsWorker } from './queues/metaLeadsQueue';
 import { tokenRefreshQueue, scheduleTokenRefresh, tokenRefreshWorker } from './queues/tokenRefreshQueue';
 import { notificationsQueue, notificationsWorker } from './queues/notificationsQueue';
@@ -49,15 +49,17 @@ app.set('io', io);
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath('/admin/queues');
 
+const boardQueues = [
+  metaLeadsQueue && new BullMQAdapter(metaLeadsQueue),
+  metaLeadsFailedQueue && new BullMQAdapter(metaLeadsFailedQueue),
+  tokenRefreshQueue && new BullMQAdapter(tokenRefreshQueue),
+  notificationsQueue && new BullMQAdapter(notificationsQueue),
+  spreadsheetQueue && new BullMQAdapter(spreadsheetQueue),
+  trialExpiryQueue && new BullMQAdapter(trialExpiryQueue),
+].filter((q): q is BullMQAdapter => Boolean(q));
+
 createBullBoard({
-  queues: [
-    new BullMQAdapter(metaLeadsQueue) as any,
-    new BullMQAdapter(metaLeadsFailedQueue) as any,
-    new BullMQAdapter(tokenRefreshQueue) as any,
-    new BullMQAdapter(notificationsQueue) as any,
-    new BullMQAdapter(spreadsheetQueue) as any,
-    new BullMQAdapter(trialExpiryQueue) as any,
-  ],
+  queues: boardQueues as any,
   serverAdapter: serverAdapter,
 });
 
@@ -224,6 +226,52 @@ if (process.env.NODE_ENV !== 'test') {
       } catch (err: any) {
         console.error('Failed to schedule startup Meta sync cron:', err.message);
       }
+    } else {
+      logger.info('AppStartup', 'Cleaning up stale Meta sync repeatable jobs from Redis...');
+      try {
+        const { Queue } = require('bullmq');
+        const tempQueue = new Queue('meta-leads', { connection: redisConnection as any });
+        const repeatable = await tempQueue.getRepeatableJobs();
+        for (const job of repeatable) {
+          await tempQueue.removeRepeatableByKey(job.key);
+          logger.info('AppStartup', `Cleaned up stale Meta cron job: ${job.key}`);
+        }
+        await tempQueue.close();
+      } catch (err: any) {
+        console.error('Failed to clean up stale Meta repeatable jobs:', err.message);
+      }
+    }
+
+    if (!enableTokenRefresh) {
+      logger.info('AppStartup', 'Cleaning up stale Token Refresh repeatable jobs from Redis...');
+      try {
+        const { Queue } = require('bullmq');
+        const tempQueue = new Queue('token-refresh', { connection: redisConnection as any });
+        const repeatable = await tempQueue.getRepeatableJobs();
+        for (const job of repeatable) {
+          await tempQueue.removeRepeatableByKey(job.key);
+          logger.info('AppStartup', `Cleaned up stale Token Refresh cron job: ${job.key}`);
+        }
+        await tempQueue.close();
+      } catch (err: any) {
+        console.error('Failed to clean up stale Token Refresh repeatable jobs:', err.message);
+      }
+    }
+
+    if (!enableTrial) {
+      logger.info('AppStartup', 'Cleaning up stale Trial Expiry repeatable jobs from Redis...');
+      try {
+        const { Queue } = require('bullmq');
+        const tempQueue = new Queue('trial-expiry', { connection: redisConnection as any });
+        const repeatable = await tempQueue.getRepeatableJobs();
+        for (const job of repeatable) {
+          await tempQueue.removeRepeatableByKey(job.key);
+          logger.info('AppStartup', `Cleaned up stale Trial Expiry cron job: ${job.key}`);
+        }
+        await tempQueue.close();
+      } catch (err: any) {
+        console.error('Failed to clean up stale Trial Expiry repeatable jobs:', err.message);
+      }
     }
   });
 
@@ -277,21 +325,20 @@ if (process.env.NODE_ENV !== 'test') {
     ];
 
     for (const item of queues) {
-      try {
-        await item.queue.close();
-        console.log(`✔ [Shutdown] Queue closed: ${item.name}`);
-      } catch (err: any) {
-        console.error(`❌ [Shutdown] Failed to close queue: ${item.name}`, err.message);
+      if (item.queue) {
+        try {
+          await item.queue.close();
+          console.log(`✔ [Shutdown] Queue closed: ${item.name}`);
+        } catch (err: any) {
+          console.error(`❌ [Shutdown] Failed to close queue: ${item.name}`, err.message);
+        }
       }
     }
 
     // 4. Quit Redis connections
     console.log('⏳ [Shutdown] Closing Redis connection pools...');
     try {
-      await Promise.all([
-        redis.quit(),
-        redisConnection.quit()
-      ]);
+      await redisConnection.quit();
       console.log('✔ [Shutdown] Redis connections closed cleanly');
     } catch (err: any) {
       console.error('❌ [Shutdown] Failed to close Redis connections', err.message);

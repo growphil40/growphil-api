@@ -8,18 +8,20 @@ import { redisConnection } from '../utils/redis';
 
 const connection = redisConnection;
 
-export const tokenRefreshQueue = new Queue('token-refresh', {
-  connection: connection as any,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 2000,
-    },
-    removeOnComplete: { count: 100 },
-    removeOnFail: { count: 100 },
-  },
-});
+export const tokenRefreshQueue = process.env.ENABLE_TOKEN_REFRESH_WORKER === 'true'
+  ? new Queue('token-refresh', {
+      connection: connection as any,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 100 },
+      },
+    })
+  : null;
 
 export let tokenRefreshWorker: Worker | undefined = undefined;
 
@@ -129,6 +131,10 @@ if (process.env.ENABLE_TOKEN_REFRESH_WORKER === 'true') {
 
 // ─── Schedule Daily Cron at 02:00 ─────────────────────────────────────────────
 export async function scheduleTokenRefresh() {
+  if (!tokenRefreshQueue) {
+    logger.info('TokenRefreshQueue', 'Daily token refresh cron not scheduled (queue is disabled)');
+    return;
+  }
   try {
     await tokenRefreshQueue.add(
       'refresh-meta-tokens',

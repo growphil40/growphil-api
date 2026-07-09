@@ -7,16 +7,20 @@ import { redisConnection } from '../utils/redis';
 
 const connection = redisConnection;
 
-export const notificationsQueue = new Queue('notifications', {
-  connection: connection as any,
-  defaultJobOptions: {
-    attempts: 3,
-    backoff: {
-      type: 'exponential',
-      delay: 2000,
-    },
-  },
-});
+export const notificationsQueue = process.env.ENABLE_NOTIFICATION_WORKER === 'true'
+  ? new Queue('notifications', {
+      connection: connection as any,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 100 },
+      },
+    })
+  : null;
 
 export let notificationsWorker: Worker | undefined = undefined;
 

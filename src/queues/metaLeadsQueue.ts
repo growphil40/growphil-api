@@ -10,27 +10,31 @@ import { redisConnection } from '../utils/redis';
 const connection = redisConnection;
 
 // ─── Primary Meta Leads Queue ────────────────────────────────────────────────
-export const metaLeadsQueue = new Queue('meta-leads', {
-  connection: connection as any,
-  defaultJobOptions: {
-    attempts: 5,
-    backoff: {
-      type: 'exponential',
-      delay: 5000, // 5s, 10s, 20s, 40s, 80s
-    },
-    removeOnComplete: { count: 200 },
-    removeOnFail: false, // Keep failed jobs for DLQ transfer
-  },
-});
+export const metaLeadsQueue = process.env.ENABLE_META_WORKER === 'true'
+  ? new Queue('meta-leads', {
+      connection: connection as any,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: {
+          type: 'exponential',
+          delay: 5000, // 5s, 10s, 20s, 40s, 80s
+        },
+        removeOnComplete: { count: 200 },
+        removeOnFail: false, // Keep failed jobs for DLQ transfer
+      },
+    })
+  : null;
 
 // ─── Dead Letter Queue ────────────────────────────────────────────────────────
-export const metaLeadsFailedQueue = new Queue('meta-leads-failed', {
-  connection: connection as any,
-  defaultJobOptions: {
-    removeOnComplete: { count: 500 },
-    removeOnFail: { count: 500 },
-  },
-});
+export const metaLeadsFailedQueue = process.env.ENABLE_META_WORKER === 'true'
+  ? new Queue('meta-leads-failed', {
+      connection: connection as any,
+      defaultJobOptions: {
+        removeOnComplete: { count: 500 },
+        removeOnFail: { count: 500 },
+      },
+    })
+  : null;
 
 // ─── Main Worker ─────────────────────────────────────────────────────────────
 // ─── Main Worker ─────────────────────────────────────────────────────────────
@@ -303,16 +307,20 @@ if (process.env.ENABLE_META_WORKER === 'true') {
         error: err.message,
       });
 
-      await metaLeadsFailedQueue.add('dead-letter', {
-        originalJobId: job.id,
-        jobName: job.name,
-        clientId: job.data?.clientId,
-        leadgenId: job.data?.leadgenId,
-        pageId: job.data?.pageId,
-        formId: job.data?.formId,
-        errorMessage: err.message,
-        failedAt: new Date().toISOString(),
-      });
+      if (metaLeadsFailedQueue) {
+        await metaLeadsFailedQueue.add('dead-letter', {
+          originalJobId: job.id,
+          jobName: job.name,
+          clientId: job.data?.clientId,
+          leadgenId: job.data?.leadgenId,
+          pageId: job.data?.pageId,
+          formId: job.data?.formId,
+          errorMessage: err.message,
+          failedAt: new Date().toISOString(),
+        });
+      } else {
+        logger.error('MetaLeadsDLQ', 'Could not move job to Dead Letter Queue: metaLeadsFailedQueue is disabled.');
+      }
     } catch (dlqError: any) {
       logger.error('MetaLeadsDLQ', 'Failed to move job to dead letter queue', { error: dlqError.message });
     }
@@ -325,6 +333,10 @@ if (process.env.ENABLE_META_WORKER === 'true') {
 
 // ─── Schedule 6-hour cron sync ────────────────────────────────────────────────
 export async function scheduleMetaSync() {
+  if (!metaLeadsQueue) {
+    logger.info('MetaLeadsQueue', 'Meta sync cron not scheduled (queue is disabled)');
+    return;
+  }
   try {
     await metaLeadsQueue.add(
       'sync-leads',

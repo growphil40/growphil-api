@@ -127,18 +127,25 @@ export async function handleMetaWebhook(req: Request, res: Response, next: NextF
               }
 
               if (client) {
-                await metaLeadsQueue.add('process-lead', {
-                  leadgenId: leadgen_id,
-                  clientId: client.id,
-                  formId: form_id,
-                  pageId: page_id,
-                });
-                logger.info('MetaWebhook', 'Enqueued process-lead job', {
-                  clientId: client.id,
-                  pageId: page_id,
-                  formId: form_id,
-                  leadgenId: leadgen_id,
-                });
+                if (metaLeadsQueue) {
+                  await metaLeadsQueue.add('process-lead', {
+                    leadgenId: leadgen_id,
+                    clientId: client.id,
+                    formId: form_id,
+                    pageId: page_id,
+                  });
+                  logger.info('MetaWebhook', 'Enqueued process-lead job', {
+                    clientId: client.id,
+                    pageId: page_id,
+                    formId: form_id,
+                    leadgenId: leadgen_id,
+                  });
+                } else {
+                  logger.warn('MetaWebhook', 'Received Facebook webhook lead event, but Meta Leads queue is disabled.', {
+                    leadgenId: leadgen_id,
+                    clientId: client.id,
+                  });
+                }
 
                 // Emit webhook:received event
                 try {

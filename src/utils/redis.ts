@@ -86,12 +86,6 @@ const baseRedisOptions: RedisOptions = {
   }
 };
 
-// General-purpose client for caching (reads/writes)
-export const redis = new IORedis(redisUrl, {
-  ...baseRedisOptions,
-  maxRetriesPerRequest: 20 // Enforce limit for standard operations to prevent hanging HTTP responses
-});
-
 // Client connection specifically shared by all BullMQ workers and queues (requires maxRetriesPerRequest = null)
 export const redisConnection = new IORedis(redisUrl, {
   ...baseRedisOptions,
@@ -128,6 +122,5 @@ const registerEventLoggers = (client: IORedis, name: string) => {
   });
 };
 
-registerEventLoggers(redis, 'CacheClient');
 registerEventLoggers(redisConnection, 'QueueClient');
 
