@@ -31,8 +31,8 @@ import { redisConnection } from './utils/redis';
 import { metaLeadsQueue, metaLeadsFailedQueue, scheduleMetaSync, metaLeadsWorker } from './queues/metaLeadsQueue';
 import { tokenRefreshQueue, scheduleTokenRefresh, tokenRefreshWorker } from './queues/tokenRefreshQueue';
 import { notificationsQueue, notificationsWorker } from './queues/notificationsQueue';
-import { spreadsheetQueue, cleanupOrphanedSpreadsheetJobs, spreadsheetWorker } from './queues/spreadsheet.queue';
 import { trialExpiryQueue, scheduleDailyTrialSweep, trialExpiryWorker } from './queues/trialExpiryQueue';
+import { startSpreadsheetScheduler } from './modules/google-sheets/spreadsheetScheduler.service';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -54,7 +54,6 @@ const boardQueues = [
   metaLeadsFailedQueue && new BullMQAdapter(metaLeadsFailedQueue),
   tokenRefreshQueue && new BullMQAdapter(tokenRefreshQueue),
   notificationsQueue && new BullMQAdapter(notificationsQueue),
-  spreadsheetQueue && new BullMQAdapter(spreadsheetQueue),
   trialExpiryQueue && new BullMQAdapter(trialExpiryQueue),
 ].filter((q): q is BullMQAdapter => Boolean(q));
 
@@ -164,7 +163,7 @@ app.use('/admin/queues', authMiddleware, requireRoles(['super_admin']), serverAd
 // System diagnostics endpoint for background workers
 app.get('/system/workers', (req: Request, res: Response) => {
   res.status(200).json({
-    spreadsheetWorker: spreadsheetWorker ? 'running' : 'disabled',
+    spreadsheetScheduler: 'running',
     metaWorker: metaLeadsWorker ? 'running' : 'disabled',
     notificationWorker: notificationsWorker ? 'running' : 'disabled',
     tokenRefreshWorker: tokenRefreshWorker ? 'running' : 'disabled',
@@ -180,7 +179,6 @@ if (process.env.NODE_ENV !== 'test') {
   server.listen(PORT, async () => {
     console.log(`🚀 GrowPhil CRM API is running at http://localhost:${PORT}`);
     
-    const enableSpreadsheet = process.env.ENABLE_SPREADSHEET_WORKER === 'true';
     const enableMeta = process.env.ENABLE_META_WORKER === 'true';
     const enableNotification = process.env.ENABLE_NOTIFICATION_WORKER === 'true';
     const enableTokenRefresh = process.env.ENABLE_TOKEN_REFRESH_WORKER === 'true';
@@ -188,38 +186,67 @@ if (process.env.NODE_ENV !== 'test') {
 
     console.log('\n========================================');
     console.log('Background Workers Startup Status:');
-    console.log(`Spreadsheet Worker: ${enableSpreadsheet ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Spreadsheet Scheduler: ENABLED (node-cron)`);
     console.log(`Meta Worker: ${enableMeta ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`Notification Worker: ${enableNotification ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`Token Refresh Worker: ${enableTokenRefresh ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`Trial Worker: ${enableTrial ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Notification Worker: ${(enableMeta && enableNotification) ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Token Refresh Worker: ${(enableMeta && enableTokenRefresh) ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`Trial Worker: ${(enableMeta && enableTrial) ? 'ENABLED' : 'DISABLED'}`);
     console.log('========================================\n');
 
-    if (enableSpreadsheet) {
-      logger.info('AppStartup', 'Initializing spreadsheet worker tasks...');
-      try {
-        await cleanupOrphanedSpreadsheetJobs();
-      } catch (err: any) {
-        console.error('Failed to run startup spreadsheet jobs cleanup:', err.message);
-      }
+    // Always start the Google Sheets scheduler
+    try {
+      startSpreadsheetScheduler();
+    } catch (err: any) {
+      console.error('Failed to start spreadsheet scheduler:', err.message);
     }
-    if (enableTrial) {
-      logger.info('AppStartup', 'Scheduling daily trial sweep cron...');
-      try {
-        await scheduleDailyTrialSweep();
-      } catch (err: any) {
-        console.error('Failed to schedule startup daily trial sweep:', err.message);
-      }
-    }
-    if (enableTokenRefresh) {
-      logger.info('AppStartup', 'Scheduling daily token refresh cron...');
-      try {
-        await scheduleTokenRefresh();
-      } catch (err: any) {
-        console.error('Failed to schedule startup token refresh:', err.message);
-      }
-    }
+
     if (enableMeta) {
+      if (enableTrial) {
+        logger.info('AppStartup', 'Scheduling daily trial sweep cron...');
+        try {
+          await scheduleDailyTrialSweep();
+        } catch (err: any) {
+          console.error('Failed to schedule startup daily trial sweep:', err.message);
+        }
+      } else {
+        logger.info('AppStartup', 'Cleaning up stale Trial Expiry repeatable jobs from Redis...');
+        try {
+          const { Queue } = require('bullmq');
+          const tempQueue = new Queue('trial-expiry', { connection: redisConnection as any });
+          const repeatable = await tempQueue.getRepeatableJobs();
+          for (const job of repeatable) {
+            await tempQueue.removeRepeatableByKey(job.key);
+            logger.info('AppStartup', `Cleaned up stale Trial Expiry cron job: ${job.key}`);
+          }
+          await tempQueue.close();
+        } catch (err: any) {
+          console.error('Failed to clean up stale Trial Expiry repeatable jobs:', err.message);
+        }
+      }
+
+      if (enableTokenRefresh) {
+        logger.info('AppStartup', 'Scheduling daily token refresh cron...');
+        try {
+          await scheduleTokenRefresh();
+        } catch (err: any) {
+          console.error('Failed to schedule startup token refresh:', err.message);
+        }
+      } else {
+        logger.info('AppStartup', 'Cleaning up stale Token Refresh repeatable jobs from Redis...');
+        try {
+          const { Queue } = require('bullmq');
+          const tempQueue = new Queue('token-refresh', { connection: redisConnection as any });
+          const repeatable = await tempQueue.getRepeatableJobs();
+          for (const job of repeatable) {
+            await tempQueue.removeRepeatableByKey(job.key);
+            logger.info('AppStartup', `Cleaned up stale Token Refresh cron job: ${job.key}`);
+          }
+          await tempQueue.close();
+        } catch (err: any) {
+          console.error('Failed to clean up stale Token Refresh repeatable jobs:', err.message);
+        }
+      }
+
       logger.info('AppStartup', 'Scheduling Meta ad accounts sync cron...');
       try {
         await scheduleMetaSync();
@@ -227,51 +254,7 @@ if (process.env.NODE_ENV !== 'test') {
         console.error('Failed to schedule startup Meta sync cron:', err.message);
       }
     } else {
-      logger.info('AppStartup', 'Cleaning up stale Meta sync repeatable jobs from Redis...');
-      try {
-        const { Queue } = require('bullmq');
-        const tempQueue = new Queue('meta-leads', { connection: redisConnection as any });
-        const repeatable = await tempQueue.getRepeatableJobs();
-        for (const job of repeatable) {
-          await tempQueue.removeRepeatableByKey(job.key);
-          logger.info('AppStartup', `Cleaned up stale Meta cron job: ${job.key}`);
-        }
-        await tempQueue.close();
-      } catch (err: any) {
-        console.error('Failed to clean up stale Meta repeatable jobs:', err.message);
-      }
-    }
-
-    if (!enableTokenRefresh) {
-      logger.info('AppStartup', 'Cleaning up stale Token Refresh repeatable jobs from Redis...');
-      try {
-        const { Queue } = require('bullmq');
-        const tempQueue = new Queue('token-refresh', { connection: redisConnection as any });
-        const repeatable = await tempQueue.getRepeatableJobs();
-        for (const job of repeatable) {
-          await tempQueue.removeRepeatableByKey(job.key);
-          logger.info('AppStartup', `Cleaned up stale Token Refresh cron job: ${job.key}`);
-        }
-        await tempQueue.close();
-      } catch (err: any) {
-        console.error('Failed to clean up stale Token Refresh repeatable jobs:', err.message);
-      }
-    }
-
-    if (!enableTrial) {
-      logger.info('AppStartup', 'Cleaning up stale Trial Expiry repeatable jobs from Redis...');
-      try {
-        const { Queue } = require('bullmq');
-        const tempQueue = new Queue('trial-expiry', { connection: redisConnection as any });
-        const repeatable = await tempQueue.getRepeatableJobs();
-        for (const job of repeatable) {
-          await tempQueue.removeRepeatableByKey(job.key);
-          logger.info('AppStartup', `Cleaned up stale Trial Expiry cron job: ${job.key}`);
-        }
-        await tempQueue.close();
-      } catch (err: any) {
-        console.error('Failed to clean up stale Trial Expiry repeatable jobs:', err.message);
-      }
+      logger.info('AppStartup', 'Redis background workers are disabled (ENABLE_META_WORKER=false). Skipping BullMQ setup and cleanups.');
     }
   });
 
@@ -298,7 +281,6 @@ if (process.env.NODE_ENV !== 'test') {
       { name: 'metaLeadsWorker', worker: metaLeadsWorker },
       { name: 'tokenRefreshWorker', worker: tokenRefreshWorker },
       { name: 'notificationsWorker', worker: notificationsWorker },
-      { name: 'spreadsheetWorker', worker: spreadsheetWorker },
       { name: 'trialExpiryWorker', worker: trialExpiryWorker },
     ];
 
@@ -320,7 +302,6 @@ if (process.env.NODE_ENV !== 'test') {
       { name: 'metaLeadsFailedQueue', queue: metaLeadsFailedQueue },
       { name: 'tokenRefreshQueue', queue: tokenRefreshQueue },
       { name: 'notificationsQueue', queue: notificationsQueue },
-      { name: 'spreadsheetQueue', queue: spreadsheetQueue },
       { name: 'trialExpiryQueue', queue: trialExpiryQueue },
     ];
 
@@ -336,12 +317,14 @@ if (process.env.NODE_ENV !== 'test') {
     }
 
     // 4. Quit Redis connections
-    console.log('⏳ [Shutdown] Closing Redis connection pools...');
-    try {
-      await redisConnection.quit();
-      console.log('✔ [Shutdown] Redis connections closed cleanly');
-    } catch (err: any) {
-      console.error('❌ [Shutdown] Failed to close Redis connections', err.message);
+    if (redisConnection) {
+      console.log('⏳ [Shutdown] Closing Redis connection pools...');
+      try {
+        await redisConnection.quit();
+        console.log('✔ [Shutdown] Redis connections closed cleanly');
+      } catch (err: any) {
+        console.error('❌ [Shutdown] Failed to close Redis connections', err.message);
+      }
     }
 
     console.log('👋 [Shutdown] Graceful shutdown complete. Exiting.');
