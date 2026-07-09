@@ -6,9 +6,8 @@ import { emitFollowUpDue } from '../sockets/leadEvents';
 import { redisConnection } from '../utils/redis';
 
 const connection = redisConnection;
-const enableMeta = process.env.ENABLE_META_WORKER === 'true';
 
-export const notificationsQueue = (enableMeta && process.env.ENABLE_NOTIFICATION_WORKER === 'true')
+export const notificationsQueue = process.env.ENABLE_NOTIFICATION_WORKER === 'true'
   ? new Queue('notifications', {
       connection: connection as any,
       defaultJobOptions: {
@@ -25,7 +24,7 @@ export const notificationsQueue = (enableMeta && process.env.ENABLE_NOTIFICATION
 
 export let notificationsWorker: Worker | undefined = undefined;
 
-if (enableMeta && process.env.ENABLE_NOTIFICATION_WORKER === 'true') {
+if (process.env.ENABLE_NOTIFICATION_WORKER === 'true') {
   const drainDelay = parseInt(process.env.NOTIFICATIONS_WORKER_DRAIN_DELAY || '60', 10);
   const stalledInterval = parseInt(process.env.NOTIFICATIONS_WORKER_STALLED_INTERVAL || '300000', 10);
 

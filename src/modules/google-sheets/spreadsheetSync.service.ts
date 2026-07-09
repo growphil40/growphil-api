@@ -38,7 +38,13 @@ export async function syncSpreadsheetLeads(connectionId: string): Promise<SyncRe
     });
 
     if (!connection) {
-      console.warn(`[Sync] Connection ${connectionId} no longer exists`);
+      console.warn(`[Queue Cleanup] Connection ${connectionId} no longer exists`);
+      try {
+        const { removeSpreadsheetSyncJob } = await import('../../queues/spreadsheet.queue');
+        await removeSpreadsheetSyncJob(connectionId);
+      } catch (cleanErr: any) {
+        logger.error('SpreadsheetSync', 'Failed to remove orphaned repeatable job during sync execution', { error: cleanErr.message });
+      }
       throw new Error(`Spreadsheet Connection ${connectionId} not found.`);
     }
 

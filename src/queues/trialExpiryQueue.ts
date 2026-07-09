@@ -6,10 +6,9 @@ import { logger } from '../utils/logger';
 import { redisConnection } from '../utils/redis';
 
 const connection = redisConnection;
-const enableMeta = process.env.ENABLE_META_WORKER === 'true';
 
 // --- Queue Setup ---
-export const trialExpiryQueue = (enableMeta && process.env.ENABLE_TRIAL_WORKER === 'true')
+export const trialExpiryQueue = process.env.ENABLE_TRIAL_WORKER === 'true'
   ? new Queue('trial-expiry', {
       connection: connection as any,
       defaultJobOptions: {
@@ -27,7 +26,7 @@ export const trialExpiryQueue = (enableMeta && process.env.ENABLE_TRIAL_WORKER =
 // --- Worker Setup ---
 export let trialExpiryWorker: Worker | undefined = undefined;
 
-if (enableMeta && process.env.ENABLE_TRIAL_WORKER === 'true') {
+if (process.env.ENABLE_TRIAL_WORKER === 'true') {
   const drainDelay = parseInt(process.env.TRIAL_EXPIRY_WORKER_DRAIN_DELAY || '60', 10);
   const stalledInterval = parseInt(process.env.TRIAL_EXPIRY_WORKER_STALLED_INTERVAL || '900000', 10);
 

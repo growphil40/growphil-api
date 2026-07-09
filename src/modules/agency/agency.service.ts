@@ -3,6 +3,7 @@ import * as jose from 'jose';
 import prisma from '../../config/db';
 import { encrypt } from '../../utils/encryption';
 import { logger } from '../../utils/logger';
+import { removeSpreadsheetSyncJob } from '../../queues/spreadsheet.queue';
 import { runBypassingTenant } from '../../utils/tenant-context';
 
 /**
@@ -139,7 +140,18 @@ export async function deleteAgencyClient(agencyId: string, clientId: string) {
       throw new Error('Client not found or access denied');
     }
 
+    // 2. Find all active spreadsheet connections to stop repeat sync jobs
+    const connections = await prisma.spreadsheetConnection.findMany({
+      where: { clientId },
+    });
 
+    for (const conn of connections) {
+      try {
+        await removeSpreadsheetSyncJob(conn.id);
+      } catch (jobErr: any) {
+        logger.warn('ClientDelete', `Failed to stop sync job for connection ${conn.id} (ignored)`, { error: jobErr.message });
+      }
+    }
 
     // 3. Try to revoke Google OAuth tokens if they exist (non-blocking)
     const googleConn = await prisma.googleConnection.findFirst({
