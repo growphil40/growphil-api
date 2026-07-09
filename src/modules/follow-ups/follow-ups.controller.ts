@@ -68,7 +68,10 @@ export async function listFollowUps(req: Request, res: Response, next: NextFunct
 export async function patchCompleteFollowUp(req: Request, res: Response, next: NextFunction) {
   try {
     const id = req.params.id;
-    const followUp = await completeFollowUp(id);
+    const userId = req.user?.userId;
+    const { outcome, leadStage } = req.body || {};
+
+    const followUp = await completeFollowUp(id, outcome, userId, leadStage);
 
     res.status(200).json({
       success: true,

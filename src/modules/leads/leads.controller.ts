@@ -25,7 +25,7 @@ export const listLeadsQuerySchema = z.object({
 });
 
 export const updateStageBodySchema = z.object({
-  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST'], {
+  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST', 'BOOKED', 'NO_NEED', 'WRONG_LEAD'], {
     errorMap: () => ({ message: 'Invalid pipeline stage value' }),
   }),
 });

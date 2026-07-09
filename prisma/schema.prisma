@@ -44,6 +44,9 @@ enum LeadStage {
   NEGOTIATION
   WON
   LOST
+  BOOKED
+  NO_NEED
+  WRONG_LEAD
 }
 
 enum FollowUpStatus {

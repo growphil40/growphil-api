@@ -1,5 +1,5 @@
 import prisma from '../../config/db';
-import { FollowUpStatus } from '@prisma/client';
+import { FollowUpStatus, LeadStage } from '@prisma/client';
 
 /**
  * Schedules a new follow-up for a lead, inheriting tenant scope parameters.
@@ -60,20 +60,60 @@ export async function getFollowUps(status?: FollowUpStatus, clientId?: string) {
 /**
  * Marks a follow-up as complete.
  */
-export async function completeFollowUp(id: string) {
-  const followUp = await prisma.followUp.findUnique({
-    where: { id },
-  });
+export async function completeFollowUp(id: string, outcome?: string, userId?: string, leadStage?: LeadStage) {
+  return prisma.$transaction(async (tx) => {
+    const followUp = await tx.followUp.findUnique({
+      where: { id },
+      include: { lead: true }
+    });
 
-  if (!followUp) {
-    throw new Error('Follow-up not found');
-  }
+    if (!followUp) {
+      throw new Error('Follow-up not found');
+    }
 
-  return prisma.followUp.update({
-    where: { id },
-    data: {
-      status: 'done',
-      completedAt: new Date(),
-    },
+    const updatedFollowUp = await tx.followUp.update({
+      where: { id },
+      data: {
+        status: 'done',
+        completedAt: new Date(),
+        note: outcome ? `${followUp.note ? `${followUp.note}\n` : ''}Outcome: ${outcome}` : followUp.note,
+      },
+    });
+
+    if (leadStage && followUp.lead && followUp.lead.stage !== leadStage) {
+      const oldStage = followUp.lead.stage;
+      await tx.lead.update({
+        where: { id: followUp.leadId },
+        data: { stage: leadStage }
+      });
+
+      await tx.activityLog.create({
+        data: {
+          leadId: followUp.leadId,
+          userId: userId!,
+          clientId: followUp.clientId,
+          agencyId: followUp.agencyId,
+          action: 'stage_change',
+          oldValue: oldStage,
+          newValue: leadStage,
+        }
+      });
+    }
+
+    if (userId) {
+      await tx.activityLog.create({
+        data: {
+          leadId: followUp.leadId,
+          userId,
+          clientId: followUp.clientId,
+          agencyId: followUp.agencyId,
+          action: 'follow_up_outcome',
+          oldValue: 'pending',
+          newValue: outcome || 'Completed',
+        },
+      });
+    }
+
+    return updatedFollowUp;
   });
 }
