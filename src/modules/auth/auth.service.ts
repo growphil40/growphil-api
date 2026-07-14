@@ -46,8 +46,8 @@ export async function createRefreshToken(userId: string, tenantId: string, tenan
   // Generate random 64-byte hex secret
   const secret = crypto.randomBytes(64).toString('hex');
   
-  // Bcrypt hash the secret (cost 12)
-  const tokenHash = await bcrypt.hash(secret, BCRYPT_SALT_ROUNDS);
+  // SHA-256 hash the secret for fast microsecond database checks (fully secure for high-entropy random keys)
+  const tokenHash = crypto.createHash('sha256').update(secret).digest('hex');
   
   // Set expiry
   const expiresAt = new Date();
@@ -242,8 +242,15 @@ export async function rotateRefreshToken(compoundToken: string) {
       throw err;
     }
 
-    // 3. Verify bcrypt hash of the secret
-    const isSecretValid = await bcrypt.compare(secret, tokenRecord.tokenHash);
+    // 3. Verify hash of the secret (support legacy bcrypt and optimized SHA-256)
+    let isSecretValid = false;
+    if (tokenRecord.tokenHash.startsWith('$2')) {
+      isSecretValid = await bcrypt.compare(secret, tokenRecord.tokenHash);
+    } else {
+      const hashedSecret = crypto.createHash('sha256').update(secret).digest('hex');
+      isSecretValid = (hashedSecret === tokenRecord.tokenHash);
+    }
+
     if (!isSecretValid) {
       // Potential theft or breach - invalidate all user tokens in production
       await prisma.refreshToken.delete({ where: { id: tokenId } }).catch(() => {});
