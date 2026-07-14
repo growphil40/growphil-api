@@ -18,6 +18,10 @@ const modelTenantFields: Record<string, { agencyField?: string; clientField?: st
   SpreadsheetConnection: { clientField: 'clientId' },
   SpreadsheetColumnMapping: { clientField: 'clientId' },
   SpreadsheetImportHistory: { clientField: 'clientId' },
+  TelegramIntegration: { clientField: 'clientId' },
+  TelegramRecipient: { clientField: 'clientId' },
+  NotificationLog: { clientField: 'clientId' },
+  NotificationPreference: { clientField: 'clientId' },
 };
 
 /**
@@ -63,6 +67,13 @@ function decryptNestedFields(obj: any, visited = new WeakSet()) {
       // Ignore
     }
   }
+  if (typeof obj.botToken === 'string') {
+    try {
+      obj.botToken = decrypt(obj.botToken);
+    } catch (error) {
+      // Ignore
+    }
+  }
 
   // Recursively decrypt nested objects/relations
   for (const key of Object.keys(obj)) {
@@ -91,6 +102,18 @@ prisma.$use(async (params, next) => {
     }
     if (data.refreshToken) {
       data.refreshToken = encrypt(data.refreshToken);
+    }
+  }
+
+  if (modelName === 'TelegramIntegration') {
+    if (params.args?.data?.botToken) {
+      params.args.data.botToken = encrypt(params.args.data.botToken);
+    }
+    if (params.args?.create?.botToken) {
+      params.args.create.botToken = encrypt(params.args.create.botToken);
+    }
+    if (params.args?.update?.botToken) {
+      params.args.update.botToken = encrypt(params.args.update.botToken);
     }
   }
 

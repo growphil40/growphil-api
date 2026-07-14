@@ -12,7 +12,7 @@ import { emitLeadStageChanged } from '../../sockets/leadEvents';
 
 // Validation Schemas
 export const listLeadsQuerySchema = z.object({
-  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST']).optional(),
+  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST', 'BOOKED', 'NO_NEED', 'WRONG_LEAD', 'CALL_NOT_ATTENDED']).optional(),
   assignedTo: z.string().uuid('Invalid user ID format').optional(),
   search: z.string().optional(),
   source: z.string().optional(),
@@ -25,13 +25,22 @@ export const listLeadsQuerySchema = z.object({
 });
 
 export const updateStageBodySchema = z.object({
-  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST', 'BOOKED', 'NO_NEED', 'WRONG_LEAD'], {
+  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST', 'BOOKED', 'NO_NEED', 'WRONG_LEAD', 'CALL_NOT_ATTENDED'], {
     errorMap: () => ({ message: 'Invalid pipeline stage value' }),
   }),
 });
 
 export const addNoteBodySchema = z.object({
   note: z.string().min(1, 'Note content cannot be empty'),
+});
+
+export const createLeadBodySchema = z.object({
+  name: z.string().min(1, 'Customer Name is required'),
+  email: z.string().email('Invalid email address format').or(z.literal('')).optional().nullable(),
+  phone: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  source: z.string().optional().nullable(),
+  stage: z.enum(['NEW', 'CONTACTED', 'FOLLOW_UP', 'QUALIFIED', 'NEGOTIATION', 'WON', 'LOST', 'BOOKED', 'NO_NEED', 'WRONG_LEAD', 'CALL_NOT_ATTENDED']).optional().nullable(),
 });
 
 /**
@@ -219,6 +228,59 @@ export async function bulkDeleteLeads(req: Request, res: Response, next: NextFun
     res.status(200).json({
       success: true,
       data: { message: `${leadIds.length} leads deleted successfully` },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Creates a lead manually under the active Client workspace.
+ */
+export async function postCreateLead(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    const userId = req.user?.userId;
+
+    if (!clientId || !userId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized user context', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    // Resolve client's parent agency ID using bypassing context
+    const clientRecord = await require('../../config/db').default.client.findUnique({
+      where: { id: clientId },
+      select: { agencyId: true },
+    });
+
+    if (!clientRecord) {
+      res.status(404).json({ success: false, data: null, error: { message: 'Client workspace not found', code: 'NOT_FOUND' } });
+      return;
+    }
+
+    const leadData = createLeadBodySchema.parse(req.body);
+    
+    const { createManualLead } = require('./leads.service');
+    const lead = await createManualLead(clientId, clientRecord.agencyId, leadData, userId);
+
+    // Emit Socket event: lead:new
+    const io = req.app.get('io');
+    if (io) {
+      const { emitLeadNew } = require('../../sockets/leadEvents');
+      emitLeadNew(io, clientId, {
+        lead,
+        leadId: lead.id,
+        name: lead.name,
+        phone: lead.phone,
+        source: lead.source,
+        stage: lead.stage,
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      data: lead,
       meta: {},
     });
   } catch (error) {

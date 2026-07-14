@@ -47,6 +47,7 @@ enum LeadStage {
   BOOKED
   NO_NEED
   WRONG_LEAD
+  CALL_NOT_ATTENDED
 }
 
 enum FollowUpStatus {
@@ -127,6 +128,10 @@ model Client {
   tasks                      Task[]
   tags                       Tag[]
   notifications              Notification[]
+  telegramRecipients          TelegramRecipient[]
+  notificationLogs            NotificationLog[]
+  notificationPreference      NotificationPreference?
+  telegramIntegrations        TelegramIntegration[]
 
   @@map("clients")
 }
@@ -575,4 +580,68 @@ model Notification {
   user      User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("notifications")
+}
+
+model TelegramIntegration {
+  id           String   @id @default(uuid()) @db.Uuid
+  clientId     String   @map("client_id") @db.Uuid
+  botToken     String   @map("bot_token") @db.Text
+  botUsername  String   @map("bot_username") @db.VarChar(255)
+  botName      String   @map("bot_name") @db.VarChar(255)
+  isConnected  Boolean  @default(true) @map("is_connected")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  recipients   TelegramRecipient[]
+
+  @@unique([clientId, botUsername])
+  @@map("telegram_integrations")
+}
+
+model TelegramRecipient {
+  id            String   @id @default(uuid()) @db.Uuid
+  clientId      String   @map("client_id") @db.Uuid
+  integrationId String   @map("integration_id") @db.Uuid
+  chatId        String   @map("chat_id") @db.VarChar(100)
+  username      String?  @db.VarChar(255)
+  firstName     String?  @map("first_name") @db.VarChar(255)
+  lastName      String?  @map("last_name") @db.VarChar(255)
+  isActive      Boolean  @default(true) @map("is_active")
+  connectedAt   DateTime @default(now()) @map("connected_at")
+
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  integration   TelegramIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, chatId])
+  @@map("telegram_recipients")
+}
+
+model NotificationLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  clientId    String   @map("client_id") @db.Uuid
+  channel     String   @db.VarChar(50)
+  recipient   String   @db.VarChar(255)
+  title       String?  @db.VarChar(255)
+  message     String   @db.Text
+  status      String   @db.VarChar(50)
+  error       String?  @db.Text
+  sentAt      DateTime @default(now()) @map("sent_at")
+
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("notification_logs")
+}
+
+model NotificationPreference {
+  id              String   @id @default(uuid()) @db.Uuid
+  clientId        String   @unique @map("client_id") @db.Uuid
+  telegramEnabled Boolean  @default(false) @map("telegram_enabled")
+  browserEnabled  Boolean  @default(false) @map("browser_enabled")
+  emailEnabled    Boolean  @default(false) @map("email_enabled")
+  whatsappEnabled Boolean  @default(false) @map("whatsapp_enabled")
+
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
 }

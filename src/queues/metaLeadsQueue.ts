@@ -176,6 +176,14 @@ if (process.env.ENABLE_META_WORKER === 'true') {
             leadId: lead.id,
           });
 
+          // Trigger Notification Engine (decoupled via queue)
+          try {
+            const { publishLeadCreated } = require('../modules/notifications/notification.service');
+            await publishLeadCreated(lead.id, client.id);
+          } catch (notifErr: any) {
+            logger.warn('MetaLeadsWorker', 'Failed to publish lead creation notification to queue', { error: notifErr.message });
+          }
+
           // 6. Update client last sync timestamp + token status
           await prisma.client.update({
             where: { id: clientId },

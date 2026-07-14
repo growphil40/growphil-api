@@ -13,6 +13,7 @@ import { salesRouter } from './modules/sales/sales.routes';
 import { metaRouter } from './modules/meta/meta.routes';
 import { googleSheetsRouter } from './modules/google-sheets/googleSheets.routes';
 import { superAdminAgenciesRouter } from './modules/super-admin/agencies.routes';
+import { telegramRouter, clientTelegramRouter } from './modules/telegram/telegram.routes';
 import { authMiddleware } from './middleware/auth';
 import { tenantScopeMiddleware } from './middleware/tenantScope';
 import { errorHandler } from './middleware/errorHandler';
@@ -30,7 +31,7 @@ import { ExpressAdapter } from '@bull-board/express';
 import { redisConnection } from './utils/redis';
 import { metaLeadsQueue, metaLeadsFailedQueue, scheduleMetaSync, metaLeadsWorker } from './queues/metaLeadsQueue';
 import { tokenRefreshQueue, scheduleTokenRefresh, tokenRefreshWorker } from './queues/tokenRefreshQueue';
-import { notificationsQueue, notificationsWorker } from './queues/notificationsQueue';
+import { notificationsQueue, notificationsWorker } from './modules/notifications/notification.queue';
 import { trialExpiryQueue, scheduleDailyTrialSweep, trialExpiryWorker } from './queues/trialExpiryQueue';
 import { startSpreadsheetScheduler } from './modules/google-sheets/spreadsheetScheduler.service';
 
@@ -153,6 +154,12 @@ app.use('/v1/sales', generalLimiter, salesRouter);
 
 // Google Sheets Connector routes (Protected, Client Owner or Agency Admin, rate limited)
 app.use('/v1/google', generalLimiter, googleSheetsRouter);
+
+// Telegram Connector routes (Agency Bot management, public webhooks)
+app.use('/v1/telegram', generalLimiter, telegramRouter);
+
+// Client Telegram recipient endpoints (Protected)
+app.use('/v1/client/telegram', generalLimiter, clientTelegramRouter);
 
 // Agencies management routes (Protected, Super Admin only, rate limited)
 app.use('/v1/agencies', generalLimiter, superAdminAgenciesRouter);

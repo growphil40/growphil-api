@@ -1,0 +1,310 @@
+import { Request, Response, NextFunction } from 'express';
+import { connectBotSchema } from './telegram.validation';
+import { 
+  validateBotTokenAndGetInfo, 
+  setBotWebhook, 
+  deleteBotWebhook, 
+  handleWebhookUpdate 
+} from './telegram.service';
+import { 
+  upsertIntegration, 
+  getIntegrationsByClientId, 
+  getIntegrationById,
+  deleteIntegrationById,
+  upsertPreference,
+  getPreferenceByClientId,
+  getRecipientsByClientId,
+  deleteRecipientById
+} from './telegram.repository';
+import prisma from '../../config/db';
+import { decrypt } from '../../utils/encryption';
+import { runBypassingTenant } from '../../utils/tenant-context';
+import { logger } from '../../utils/logger';
+
+/**
+ * Agency Endpoint: Connect Telegram Bot
+ */
+export async function connectBot(req: Request, res: Response, next: NextFunction) {
+  try {
+    res.status(400).json({
+      success: false,
+      data: null,
+      error: { message: 'Agency-level bot connection is deprecated. Please configure Telegram bot under Client workspace settings.', code: 'DEPRECATED' }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Agency Endpoint: Get Bot Status
+ */
+export async function getBotStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    res.status(200).json({
+      success: true,
+      data: { isConnected: false },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Agency Endpoint: Disconnect Telegram Bot
+ */
+export async function disconnectBot(req: Request, res: Response, next: NextFunction) {
+  try {
+    res.status(200).json({
+      success: true,
+      data: { isConnected: false },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Client Endpoint: Connect Client to Bot
+ */
+export async function clientConnect(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    if (!clientId || req.user?.tenantType !== 'client') {
+      res.status(403).json({
+        success: false,
+        data: null,
+        error: { message: 'Forbidden. Only Client accounts can connect.', code: 'FORBIDDEN' },
+      });
+      return;
+    }
+
+    const { botToken } = connectBotSchema.parse(req.body);
+
+    // Call Telegram getMe API to verify token validity
+    const botInfo = await validateBotTokenAndGetInfo(botToken);
+
+    // Save integration in DB
+    const integration = await upsertIntegration(
+      clientId,
+      botToken,
+      botInfo.botUsername,
+      botInfo.botName
+    );
+
+    // Register Webhook with Telegram
+    await setBotWebhook(integration.id, botToken);
+
+    // Activate preferences
+    await upsertPreference(clientId, true);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        isConnected: true,
+        telegramEnabled: true,
+        botName: botInfo.botName,
+        botUsername: botInfo.botUsername,
+        botUrl: `https://t.me/${botInfo.botUsername}?start=integration_${integration.id}`,
+      },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Client Endpoint: Get Client Connection Status and Recipients
+ */
+export async function getClientStatus(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    if (!clientId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    // Fetch preferences
+    const preference = await getPreferenceByClientId(clientId);
+    const telegramEnabled = preference ? preference.telegramEnabled : false;
+
+    // Fetch client-specific integrations
+    const integrations = await getIntegrationsByClientId(clientId);
+
+    // Fetch all recipients for client
+    const allRecipients = await getRecipientsByClientId(clientId);
+
+    const integrationsData = integrations.map((integration: any) => {
+      const integrationRecipients = allRecipients.filter(
+        (r: any) => r.integrationId === integration.id
+      );
+      return {
+        id: integration.id,
+        botName: integration.botName,
+        botUsername: integration.botUsername,
+        botUrl: `https://t.me/${integration.botUsername}?start=integration_${integration.id}`,
+        isConnected: integration.isConnected,
+        recipientsCount: integrationRecipients.length,
+        recipients: integrationRecipients.map((r: any) => ({
+          id: r.id,
+          chatId: r.chatId,
+          username: r.username,
+          firstName: r.firstName,
+          lastName: r.lastName,
+          isActive: r.isActive,
+          connectedAt: r.connectedAt.toISOString(),
+        })),
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        telegramEnabled,
+        integrations: integrationsData,
+      },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Client Endpoint: Disconnect Client Integration (Specific Bot)
+ */
+export async function clientDisconnect(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    const integrationId = req.params.integrationId;
+
+    if (!clientId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    if (!integrationId) {
+      res.status(400).json({ success: false, data: null, error: { message: 'Integration ID is required.', code: 'BAD_REQUEST' } });
+      return;
+    }
+
+    // Find specific integration
+    const integration = await getIntegrationById(integrationId);
+    if (!integration || integration.clientId !== clientId) {
+      res.status(404).json({ success: false, data: null, error: { message: 'Integration not found.', code: 'NOT_FOUND' } });
+      return;
+    }
+
+    // Delete bot webhook
+    const token = decrypt(integration.botToken);
+    await deleteBotWebhook(token);
+
+    // Delete recipient records associated with this integration
+    await runBypassingTenant(async () => {
+      await prisma.telegramRecipient.deleteMany({
+        where: { integrationId },
+      });
+    });
+
+    // Delete integration record from DB
+    await deleteIntegrationById(clientId, integrationId);
+
+    // If no integrations left, disable preference
+    const remaining = await getIntegrationsByClientId(clientId);
+    if (remaining.length === 0) {
+      await upsertPreference(clientId, false);
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        message: 'Telegram bot disconnected successfully.',
+      },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Public Webhook Callback Endpoint: Telegram updates
+ */
+export async function processWebhook(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { integrationId } = req.params;
+    
+    // Call background service
+    await handleWebhookUpdate(integrationId, req.body);
+    
+    // Always return 200 OK immediately to Telegram
+    res.status(200).json({ success: true });
+  } catch (error: any) {
+    logger.error('TelegramController', 'Error in public webhook controller', { error: error.message });
+    res.status(200).json({ success: true, warning: error.message });
+  }
+}
+
+/**
+ * Client Endpoint: Remove single recipient
+ */
+export async function removeClientRecipient(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    const { id: recipientId } = req.params;
+
+    if (!clientId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    await deleteRecipientById(clientId, recipientId);
+
+    res.status(200).json({
+      success: true,
+      data: { message: 'Recipient disconnected successfully.' },
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Client Endpoint: Get Client Notification Logs
+ */
+export async function getClientLogs(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    if (!clientId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    const logs = await prisma.notificationLog.findMany({
+      where: { clientId },
+      orderBy: { sentAt: 'desc' },
+      take: 15,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: logs.map((l) => ({
+        id: l.id,
+        channel: l.channel,
+        recipient: l.recipient,
+        title: l.title,
+        message: l.message,
+        status: l.status,
+        error: l.error,
+        sentAt: l.sentAt.toISOString(),
+      })),
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}

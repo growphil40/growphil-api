@@ -184,3 +184,54 @@ export async function deleteLeadsByIds(leadIds: string[]) {
     where: { id: { in: leadIds } },
   });
 }
+
+/**
+ * Creates a lead manually and triggers the notification queue.
+ */
+export async function createManualLead(
+  clientId: string,
+  agencyId: string,
+  data: { name: string; email?: string | null; phone?: string | null; city?: string | null; source?: string | null; stage?: string | null },
+  userId: string
+) {
+  return prisma.$transaction(async (tx) => {
+    // 1. Create lead
+    const lead = await tx.lead.create({
+      data: {
+        clientId,
+        agencyId,
+        name: data.name,
+        email: data.email || null,
+        phone: data.phone || null,
+        city: data.city || null,
+        source: data.source || 'MANUAL',
+        stage: (data.stage as any) || 'NEW',
+        leadSource: 'MANUAL',
+        status: 'ACTIVE',
+        createdBy: 'USER',
+      },
+    });
+
+    // 2. Log activity
+    await tx.activityLog.create({
+      data: {
+        leadId: lead.id,
+        userId,
+        action: 'create',
+        newValue: `Lead manually created by User`,
+        clientId,
+        agencyId,
+      },
+    });
+
+    // 3. Trigger Notification Engine (decoupled via queue)
+    try {
+      const { publishLeadCreated } = require('../notifications/notification.service');
+      await publishLeadCreated(lead.id, clientId);
+    } catch (notifErr: any) {
+      console.warn('[LeadsService] Failed to publish lead creation notification to queue:', notifErr.message);
+    }
+
+    return lead;
+  });
+}

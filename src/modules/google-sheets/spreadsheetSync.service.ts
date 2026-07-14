@@ -326,6 +326,14 @@ export async function syncSpreadsheetLeads(connectionId: string): Promise<SyncRe
           });
           importedRows++;
 
+          // Trigger Notification Engine (decoupled via queue)
+          try {
+            const { publishLeadCreated } = require('../notifications/notification.service');
+            await publishLeadCreated(lead.id, client.id);
+          } catch (notifErr: any) {
+            logger.warn('SpreadsheetSync', 'Failed to publish lead creation notification to queue', { error: notifErr.message });
+          }
+
           // Emit Socket event: lead:new (includes full lead object for optimistic UI update)
           try {
             const io = getIo();

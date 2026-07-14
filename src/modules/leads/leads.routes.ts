@@ -9,6 +9,7 @@ import {
   postLeadNote,
   deleteLead,
   bulkDeleteLeads,
+  postCreateLead,
 } from './leads.controller';
 import { postFollowUp } from '../follow-ups/follow-ups.controller';
 
@@ -20,6 +21,7 @@ router.use(tenantScopeMiddleware);
 
 // Endpoints
 router.get('/', requireRoles(['super_admin', 'agency_admin', 'client_owner']), listLeads);
+router.post('/', requireRoles(['agency_admin', 'client_owner']), postCreateLead);
 router.post('/bulk-delete', requireRoles(['super_admin']), bulkDeleteLeads);
 router.get('/:id', requireRoles(['super_admin', 'agency_admin', 'client_owner']), getLead);
 router.patch('/:id/stage', requireRoles(['agency_admin', 'client_owner']), patchLeadStage);
