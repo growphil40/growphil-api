@@ -54,7 +54,7 @@ export class TelegramProvider implements NotificationProvider {
         // Handle blocked bot (403)
         if (result.status === 403) {
           logger.warn('TelegramProvider', 'User blocked the bot. Marking recipient inactive.', { chatId, clientId });
-          await markRecipientInactive(clientId, chatId);
+          await markRecipientInactive(integrationId, chatId);
           return; // Do not throw, no retry needed for blocked users
         }
 
