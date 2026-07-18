@@ -308,3 +308,81 @@ export async function getClientLogs(req: Request, res: Response, next: NextFunct
     next(error);
   }
 }
+
+/**
+ * Client Endpoint: Send Test Lead Alert Message to Bot
+ */
+export async function sendTestAlert(req: Request, res: Response, next: NextFunction) {
+  try {
+    const clientId = req.user?.tenantId;
+    if (!clientId) {
+      res.status(401).json({ success: false, data: null, error: { message: 'Unauthorized', code: 'UNAUTHORIZED' } });
+      return;
+    }
+
+    // Find latest lead for the client
+    const latestLead = await prisma.lead.findFirst({
+      where: { clientId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const name = latestLead?.name || 'John Doe (Test)';
+    const phone = latestLead?.phone || '+91 98765 43210';
+    const email = latestLead?.email || 'john.doe@example.com';
+    const source = latestLead?.source || 'Test Alert Button';
+    const createdAt = latestLead?.createdAt || new Date();
+    const leadId = latestLead?.id || 'mock-lead-id';
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+    const crmLink = `${frontendUrl}/client/leads/${leadId}`;
+
+    const formattedMessage = 
+      `🧪 *Test Lead Alert Received!*\n\n` +
+      `👤 *Name:* ${name}\n` +
+      `📞 *Phone:* ${phone}\n` +
+      `📧 *Email:* ${email}\n` +
+      `📍 *Source:* ${source}\n` +
+      `🕒 *Time:* ${new Date(createdAt).toLocaleString()}\n\n` +
+      `👉 [Open in GrowPhil CRM](${crmLink})`;
+
+    // Get active recipients
+    const recipients = await prisma.telegramRecipient.findMany({
+      where: { clientId, isActive: true },
+    });
+
+    if (recipients.length === 0) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: { message: 'No active Telegram recipients found. Please link a recipient chat on Telegram first.', code: 'NO_RECIPIENTS' }
+      });
+      return;
+    }
+
+    const { TelegramProvider } = require('../notifications/providers/telegram.provider');
+    const telegramProvider = new TelegramProvider();
+
+    // Dispatch messages to all recipients
+    await Promise.all(
+      recipients.map(async (recipient) => {
+        await telegramProvider.send({
+          clientId,
+          integrationId: recipient.integrationId,
+          recipientId: recipient.id,
+          chatId: recipient.chatId,
+          message: formattedMessage,
+          title: 'Test Lead Alert',
+        });
+      })
+    );
+
+    res.status(200).json({
+      success: true,
+      data: { message: 'Test message sent successfully.' },
+      meta: {}
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+

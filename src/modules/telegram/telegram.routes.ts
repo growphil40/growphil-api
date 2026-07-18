@@ -11,7 +11,8 @@ import {
   clientDisconnect,
   processWebhook,
   removeClientRecipient,
-  getClientLogs
+  getClientLogs,
+  sendTestAlert
 } from './telegram.controller';
 
 const telegramRouter = Router();
@@ -34,7 +35,9 @@ clientTelegramRouter.use(tenantScopeMiddleware);
 clientTelegramRouter.post('/connect', clientConnect);
 clientTelegramRouter.get('/status', getClientStatus);
 clientTelegramRouter.get('/logs', getClientLogs);
+clientTelegramRouter.post('/test-alert', sendTestAlert);
 clientTelegramRouter.delete('/disconnect/:integrationId', clientDisconnect);
 clientTelegramRouter.delete('/recipients/:id', removeClientRecipient);
 
 export { telegramRouter, clientTelegramRouter };
+
