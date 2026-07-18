@@ -21,19 +21,24 @@ export async function upsertIntegration(
   botUsername: string,
   botName: string
 ) {
-  return db.telegramIntegration.upsert({
+  const existing = await db.telegramIntegration.findFirst({
     where: {
-      clientId_botUsername: {
-        clientId,
-        botUsername,
+      clientId,
+      botUsername,
+    },
+  });
+  if (existing) {
+    return db.telegramIntegration.update({
+      where: { id: existing.id },
+      data: {
+        botToken,
+        botName,
+        isConnected: true,
       },
-    },
-    update: {
-      botToken,
-      botName,
-      isConnected: true,
-    },
-    create: {
+    });
+  }
+  return db.telegramIntegration.create({
+    data: {
       clientId,
       botToken,
       botUsername,
@@ -64,20 +69,25 @@ export async function upsertRecipient(
   firstName?: string | null,
   lastName?: string | null
 ) {
-  return db.telegramRecipient.upsert({
+  const existing = await db.telegramRecipient.findFirst({
     where: {
-      integrationId_chatId: {
-        integrationId,
-        chatId,
+      integrationId,
+      chatId,
+    },
+  });
+  if (existing) {
+    return db.telegramRecipient.update({
+      where: { id: existing.id },
+      data: {
+        username,
+        firstName,
+        lastName,
+        isActive: true,
       },
-    },
-    update: {
-      username,
-      firstName,
-      lastName,
-      isActive: true,
-    },
-    create: {
+    });
+  }
+  return db.telegramRecipient.create({
+    data: {
       clientId,
       integrationId,
       chatId,
@@ -90,17 +100,20 @@ export async function upsertRecipient(
 }
 
 export async function markRecipientInactive(integrationId: string, chatId: string) {
-  return db.telegramRecipient.update({
+  const existing = await db.telegramRecipient.findFirst({
     where: {
-      integrationId_chatId: {
-        integrationId,
-        chatId,
-      },
-    },
-    data: {
-      isActive: false,
+      integrationId,
+      chatId,
     },
   });
+  if (existing) {
+    return db.telegramRecipient.update({
+      where: { id: existing.id },
+      data: {
+        isActive: false,
+      },
+    });
+  }
 }
 
 export async function deleteRecipientById(clientId: string, recipientId: string) {
@@ -129,4 +142,110 @@ export async function upsertPreference(clientId: string, telegramEnabled: boolea
       telegramEnabled,
     },
   });
+}
+
+export async function createIntegration(
+  clientId: string,
+  botToken: string,
+  botUsername: string,
+  botName: string
+) {
+  const existing = await db.telegramIntegration.findFirst({
+    where: {
+      clientId,
+      botUsername,
+    },
+  });
+  if (existing) {
+    return db.telegramIntegration.update({
+      where: { id: existing.id },
+      data: {
+        botToken,
+        botName,
+        isConnected: true,
+      },
+    });
+  }
+  return db.telegramIntegration.create({
+    data: {
+      clientId,
+      botToken,
+      botUsername,
+      botName,
+      isConnected: true,
+    },
+  });
+}
+
+export async function createRecipient(
+  clientId: string,
+  integrationId: string,
+  chatId: string,
+  username?: string | null,
+  firstName?: string | null,
+  lastName?: string | null,
+  connectionMethod: any = 'MANUAL',
+  recipientName?: string | null
+) {
+  const existing = await db.telegramRecipient.findFirst({
+    where: {
+      integrationId,
+      chatId,
+    },
+  });
+  if (existing) {
+    return db.telegramRecipient.update({
+      where: { id: existing.id },
+      data: {
+        username,
+        firstName,
+        lastName,
+        recipientName,
+        connectionMethod,
+        isActive: true,
+      },
+    });
+  }
+  return db.telegramRecipient.create({
+    data: {
+      clientId,
+      integrationId,
+      chatId,
+      username,
+      firstName,
+      lastName,
+      recipientName,
+      connectionMethod,
+      isActive: true,
+    },
+  });
+}
+
+export async function findIntegration(clientId: string, botUsername: string) {
+  return db.telegramIntegration.findFirst({
+    where: {
+      clientId,
+      botUsername,
+    },
+  });
+}
+
+export async function findRecipient(integrationId: string, chatId: string) {
+  return db.telegramRecipient.findFirst({
+    where: {
+      integrationId,
+      chatId,
+    },
+  });
+}
+
+export async function validateDuplicateChat(clientId: string, chatId: string) {
+  const existing = await db.telegramRecipient.findFirst({
+    where: {
+      clientId,
+      chatId,
+      isActive: true,
+    },
+  });
+  return !!existing;
 }

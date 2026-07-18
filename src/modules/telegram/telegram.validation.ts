@@ -2,6 +2,13 @@ import { z } from 'zod';
 
 export const connectBotSchema = z.object({
   botToken: z.string().min(1, 'Bot token is required'),
+  chatId: z.string().min(1, 'Chat ID is required'),
+  recipientName: z.string().optional(),
+});
+
+export const testConnectionSchema = z.object({
+  botToken: z.string().min(1, 'Bot token is required'),
+  chatId: z.string().min(1, 'Chat ID is required'),
 });
 
 export const processWebhookSchema = z.object({

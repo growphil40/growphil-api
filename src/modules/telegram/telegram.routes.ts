@@ -12,7 +12,8 @@ import {
   processWebhook,
   removeClientRecipient,
   getClientLogs,
-  sendTestAlert
+  sendTestAlert,
+  testConnection
 } from './telegram.controller';
 
 const telegramRouter = Router();
@@ -36,6 +37,7 @@ clientTelegramRouter.post('/connect', clientConnect);
 clientTelegramRouter.get('/status', getClientStatus);
 clientTelegramRouter.get('/logs', getClientLogs);
 clientTelegramRouter.post('/test-alert', sendTestAlert);
+clientTelegramRouter.post('/test-connection', testConnection);
 clientTelegramRouter.delete('/disconnect/:integrationId', clientDisconnect);
 clientTelegramRouter.delete('/recipients/:id', removeClientRecipient);
 

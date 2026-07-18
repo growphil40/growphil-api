@@ -1,10 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
-import { connectBotSchema } from './telegram.validation';
+import { connectBotSchema, testConnectionSchema } from './telegram.validation';
 import { 
   validateBotTokenAndGetInfo, 
   setBotWebhook, 
   deleteBotWebhook, 
-  handleWebhookUpdate 
+  handleWebhookUpdate,
+  sendTelegramMessage
 } from './telegram.service';
 import { 
   upsertIntegration, 
@@ -14,7 +15,10 @@ import {
   upsertPreference,
   getPreferenceByClientId,
   getRecipientsByClientId,
-  deleteRecipientById
+  deleteRecipientById,
+  createIntegration,
+  createRecipient,
+  validateDuplicateChat
 } from './telegram.repository';
 import prisma from '../../config/db';
 import { decrypt } from '../../utils/encryption';
@@ -67,7 +71,7 @@ export async function disconnectBot(req: Request, res: Response, next: NextFunct
 }
 
 /**
- * Client Endpoint: Connect Client to Bot
+ * Client Endpoint: Connect Client to Bot (Token + Chat ID Registration)
  */
 export async function clientConnect(req: Request, res: Response, next: NextFunction) {
   try {
@@ -81,38 +85,94 @@ export async function clientConnect(req: Request, res: Response, next: NextFunct
       return;
     }
 
-    const { botToken } = connectBotSchema.parse(req.body);
+    const { botToken, chatId, recipientName } = connectBotSchema.parse(req.body);
 
-    // Call Telegram getMe API to verify token validity
+    // 1. Call Telegram getMe API to verify token validity
     const botInfo = await validateBotTokenAndGetInfo(botToken);
 
-    // Save integration in DB
-    const integration = await upsertIntegration(
+    // 2. Validate Chat ID by sending a welcome message
+    const testMsgResult = await sendTelegramMessage(
+      botToken,
+      chatId,
+      '✅ GrowPhil CRM Telegram Integration Connected Successfully.'
+    );
+
+    if (!testMsgResult.success) {
+      let errorDetail = 'Invalid Chat ID or Telegram communication error';
+      try {
+        const bodyObj = JSON.parse(testMsgResult.body || '{}');
+        if (bodyObj.description) {
+          errorDetail = bodyObj.description;
+        }
+      } catch (e) {
+        if (testMsgResult.body) errorDetail = testMsgResult.body;
+      }
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: { message: `❌ ${errorDetail}`, code: 'TELEGRAM_ERROR' },
+      });
+      return;
+    }
+
+    // 3. Prevent duplicate Chat IDs for the same client
+    const isDuplicate = await validateDuplicateChat(clientId, chatId);
+    if (isDuplicate) {
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: { message: '❌ Duplicate Chat ID already exists', code: 'DUPLICATE_CHAT_ID' },
+      });
+      return;
+    }
+
+    // 4. Save/upsert integration in DB
+    const integration = await createIntegration(
       clientId,
       botToken,
       botInfo.botUsername,
       botInfo.botName
     );
 
-    // Register Webhook with Telegram
-    await setBotWebhook(integration.id, botToken);
+    // 5. Create recipient with connectionMethod = MANUAL
+    const recipient = await createRecipient(
+      clientId,
+      integration.id,
+      chatId,
+      null, // username
+      null, // firstName
+      null, // lastName
+      'MANUAL',
+      recipientName || null
+    );
 
-    // Activate preferences
+    // 6. Register optional webhook so that deep-linking auto-start still works for other users who start the bot on Telegram
+    try {
+      await setBotWebhook(integration.id, botToken);
+    } catch (webhookErr: any) {
+      logger.warn('TelegramController', 'Failed to register optional webhook during manual connect', { error: webhookErr.message });
+    }
+
+    // 7. Activate preferences
     await upsertPreference(clientId, true);
 
     res.status(200).json({
       success: true,
-      data: {
-        isConnected: true,
-        telegramEnabled: true,
-        botName: botInfo.botName,
-        botUsername: botInfo.botUsername,
-        botUrl: `https://t.me/${botInfo.botUsername}?start=integration_${integration.id}`,
-      },
-      meta: {},
+      message: 'Telegram bot connected successfully.',
+      integration,
+      recipient,
     });
-  } catch (error) {
-    next(error);
+  } catch (error: any) {
+    const isValidationError = error.name === 'ZodError';
+    const message = isValidationError 
+      ? error.errors.map((e: any) => e.message).join(', ') 
+      : error.message;
+
+    res.status(400).json({
+      success: false,
+      data: null,
+      error: { message: message.startsWith('❌') ? message : `❌ ${message}`, code: 'BAD_REQUEST' },
+    });
   }
 }
 
@@ -154,6 +214,8 @@ export async function getClientStatus(req: Request, res: Response, next: NextFun
           username: r.username,
           firstName: r.firstName,
           lastName: r.lastName,
+          recipientName: r.recipientName,
+          connectionMethod: r.connectionMethod,
           isActive: r.isActive,
           connectedAt: r.connectedAt.toISOString(),
         })),
@@ -383,6 +445,55 @@ export async function sendTestAlert(req: Request, res: Response, next: NextFunct
     });
   } catch (error) {
     next(error);
+  }
+}
+
+/**
+ * Client Endpoint: Test Telegram Bot & Chat ID Connection (No saving)
+ */
+export async function testConnection(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { botToken, chatId } = testConnectionSchema.parse(req.body);
+
+    // 1. Verify bot token
+    await validateBotTokenAndGetInfo(botToken);
+
+    // 2. Validate Chat ID by sending test message
+    const result = await sendTelegramMessage(botToken, chatId, '🧪 Test Message from GrowPhil CRM');
+
+    if (!result.success) {
+      let errorDetail = 'Invalid Chat ID or Telegram communication error';
+      try {
+        const bodyObj = JSON.parse(result.body || '{}');
+        if (bodyObj.description) {
+          errorDetail = bodyObj.description;
+        }
+      } catch (e) {
+        if (result.body) errorDetail = result.body;
+      }
+      res.status(400).json({
+        success: false,
+        data: null,
+        error: { message: `❌ ${errorDetail}`, code: 'TELEGRAM_ERROR' },
+      });
+      return;
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Connection Successful',
+    });
+  } catch (error: any) {
+    const isValidationError = error.name === 'ZodError';
+    const message = isValidationError 
+      ? error.errors.map((e: any) => e.message).join(', ') 
+      : error.message;
+
+    res.status(400).json({
+      success: false,
+      data: null,
+      error: { message: message.startsWith('❌') ? message : `❌ ${message}`, code: 'BAD_REQUEST' },
+    });
   }
 }
 
