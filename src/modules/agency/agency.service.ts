@@ -97,30 +97,43 @@ export async function updateAgencyClient(
   email?: string,
   metaAdSpend?: number
 ) {
-  // Validate client belongs to calling agency
-  const client = await prisma.client.findUnique({
-    where: { id: clientId },
-  });
+  return runBypassingTenant(async () => {
+    // Validate client belongs to calling agency
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+    });
 
-  if (!client || client.agencyId !== agencyId) {
-    throw new Error('Client not found or access denied');
-  }
-
-  if (email && email !== client.email) {
-    const existingEmail = await prisma.client.findUnique({ where: { email } });
-    if (existingEmail) {
-      throw new Error('A client with this email address already exists');
+    if (!client || client.agencyId !== agencyId) {
+      throw new Error('Client not found or access denied');
     }
-  }
 
-  // Perform update
-  return prisma.client.update({
-    where: { id: clientId },
-    data: {
-      ...(businessName && { businessName }),
-      ...(email && { email }),
-      ...(metaAdSpend !== undefined && { metaAdSpend }),
-    },
+    if (email && email !== client.email) {
+      const existingClient = await prisma.client.findUnique({ where: { email } });
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+      if (existingClient || existingUser) {
+        throw new Error('A user or client with this email address already exists');
+      }
+    }
+
+    return prisma.$transaction(async (tx) => {
+      // 1. Sync User email if email is being updated
+      if (email && email !== client.email) {
+        await tx.user.updateMany({
+          where: { clientId },
+          data: { email },
+        });
+      }
+
+      // 2. Perform client update
+      return tx.client.update({
+        where: { id: clientId },
+        data: {
+          ...(businessName && { businessName }),
+          ...(email && { email }),
+          ...(metaAdSpend !== undefined && { metaAdSpend }),
+        },
+      });
+    });
   });
 }
 
@@ -508,4 +521,36 @@ export async function getClientAnalyticsForAgencyService(agencyId: string, clien
     roas,
     revenueByMonth,
   };
+}
+
+/**
+ * Changes a client's user account password by the agency admin.
+ */
+export async function updateAgencyClientPassword(
+  agencyId: string,
+  clientId: string,
+  newPasswordPlain: string
+) {
+  return runBypassingTenant(async () => {
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+    });
+
+    if (!client || client.agencyId !== agencyId || client.isDeleted) {
+      throw new Error('Client not found or access denied');
+    }
+
+    const passwordHash = await bcrypt.hash(newPasswordPlain, 12);
+
+    const updateResult = await prisma.user.updateMany({
+      where: { clientId },
+      data: { passwordHash },
+    });
+
+    if (updateResult.count === 0) {
+      throw new Error('No active user account found for this client');
+    }
+
+    return { message: 'Client password updated successfully' };
+  });
 }

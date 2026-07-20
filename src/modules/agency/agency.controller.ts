@@ -11,6 +11,7 @@ import {
   getAgencyProfile,
   updateAgencyProfile,
   getClientAnalyticsForAgencyService,
+  updateAgencyClientPassword,
 } from './agency.service';
 
 // Validation Schemas
@@ -333,6 +334,36 @@ export async function getClientAnalyticsForAgency(req: Request, res: Response, n
     res.status(200).json({
       success: true,
       data: analytics,
+      meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export const updateClientPasswordBodySchema = z.object({
+  password: z.string().min(6, 'Password must be at least 6 characters long'),
+});
+
+/**
+ * Controller endpoint for Agency Admin to change a client owner's password.
+ */
+export async function updateClientPassword(req: Request, res: Response, next: NextFunction) {
+  try {
+    const agencyId = req.user?.tenantId;
+    const clientId = req.params.id;
+
+    if (!agencyId) {
+      res.status(403).json({ success: false, data: null, error: { message: 'Agency context missing', code: 'FORBIDDEN' } });
+      return;
+    }
+
+    const { password } = updateClientPasswordBodySchema.parse(req.body);
+    const result = await updateAgencyClientPassword(agencyId, clientId, password);
+
+    res.status(200).json({
+      success: true,
+      data: result,
       meta: {},
     });
   } catch (error) {

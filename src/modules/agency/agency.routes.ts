@@ -12,6 +12,7 @@ import {
   getProfile,
   updateProfile,
   getClientAnalyticsForAgency,
+  updateClientPassword,
 } from './agency.controller';
 import {
   getMetaOAuthUrlForClient,
@@ -50,6 +51,7 @@ router.put('/me', updateProfile);
 router.get('/clients', listClients);
 router.post('/clients', createClient);
 router.put('/clients/:id', updateClient);
+router.put('/clients/:id/password', updateClientPassword);
 router.delete('/clients/:id', deleteClient);
 router.post('/clients/:id/meta-connect', metaConnect);
 router.get('/clients/:id/meta-connect', getMetaOAuthUrlForClient);
