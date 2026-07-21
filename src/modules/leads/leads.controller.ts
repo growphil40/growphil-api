@@ -7,6 +7,7 @@ import {
   addLeadNote,
   deleteLeadById,
   deleteLeadsByIds,
+  getLeadActivities,
 } from './leads.service';
 import { emitLeadStageChanged } from '../../sockets/leadEvents';
 
@@ -282,6 +283,33 @@ export async function postCreateLead(req: Request, res: Response, next: NextFunc
       success: true,
       data: lead,
       meta: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Lists paginated activity logs for a specific lead (read-only).
+ */
+export async function listLeadActivities(req: Request, res: Response, next: NextFunction) {
+  try {
+    const leadId = req.params.id;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+
+    const { activities, total } = await getLeadActivities(leadId, page, limit);
+    const totalPages = Math.ceil(total / limit);
+
+    res.status(200).json({
+      success: true,
+      data: activities,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
     });
   } catch (error) {
     next(error);

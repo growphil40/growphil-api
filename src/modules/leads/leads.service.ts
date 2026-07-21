@@ -235,3 +235,27 @@ export async function createManualLead(
     return lead;
   });
 }
+
+/**
+ * Fetches paginated activity logs for a specific lead, newest first.
+ */
+export async function getLeadActivities(leadId: string, page: number, limit: number) {
+  const skip = (page - 1) * limit;
+
+  const [activities, total] = await Promise.all([
+    prisma.activityLog.findMany({
+      where: { leadId },
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: { id: true, email: true, role: true },
+        },
+      },
+    }),
+    prisma.activityLog.count({ where: { leadId } }),
+  ]);
+
+  return { activities, total };
+}
