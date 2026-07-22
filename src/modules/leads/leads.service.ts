@@ -1,6 +1,25 @@
 import prisma from '../../config/db';
 
 /**
+ * Helper to extract custom properties from customFields JSON column
+ * and map them to root keys on the lead payload.
+ */
+export function enrichLead(lead: any) {
+  if (!lead) return lead;
+  const customFields = (lead.customFields as any) || {};
+  return {
+    ...lead,
+    callAttempts: customFields.callAttempts || 0,
+    lastCallResult: customFields.lastCallResult || null,
+    proposalSentAt: customFields.proposalSentAt || null,
+    proposalSalesperson: customFields.proposalSalesperson || null,
+    proposalNotes: customFields.proposalNotes || null,
+    lastActivityAt: customFields.lastActivityAt || lead.updatedAt.toISOString(),
+    lastActivityType: customFields.lastActivityType || null,
+  };
+}
+
+/**
  * Lists leads scoped to the active tenant, with filters and pagination.
  */
 export async function getLeadsList(
@@ -66,14 +85,16 @@ export async function getLeadsList(
     prisma.lead.count({ where }),
   ]);
 
-  return { leads, total };
+  const enrichedLeads = leads.map(enrichLead);
+
+  return { leads: enrichedLeads, total };
 }
 
 /**
  * Fetches a single lead with full history (follow-ups, activity logs, sales).
  */
 export async function getLeadById(leadId: string) {
-  return prisma.lead.findUnique({
+  const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     include: {
       followUps: {
@@ -95,6 +116,8 @@ export async function getLeadById(leadId: string) {
       },
     },
   });
+
+  return enrichLead(lead);
 }
 
 /**
@@ -113,10 +136,34 @@ export async function updateLeadStage(leadId: string, newStage: string, userId: 
 
     const oldStage = lead.stage;
 
+    // Prepare updated custom fields
+    let updatedCustomFields: any = lead.customFields ? { ...(lead.customFields as any) } : {};
+    const now = new Date();
+    updatedCustomFields.lastActivityAt = now.toISOString();
+    updatedCustomFields.lastActivityType = 'Stage Updated to ' + newStage;
+
+    // Connected stage first entry
+    if (newStage === 'CONTACTED' && !updatedCustomFields.connectedAt) {
+      updatedCustomFields.connectedAt = now.toISOString();
+    }
+
+    // Proposal stage transition
+    if (newStage === 'NEGOTIATION') {
+      updatedCustomFields.proposalSentAt = now.toISOString();
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { email: true }
+      });
+      updatedCustomFields.proposalSalesperson = user?.email || 'System';
+    }
+
     // 2. Perform update
     const updatedLead = await tx.lead.update({
       where: { id: leadId },
-      data: { stage: newStage as any },
+      data: {
+        stage: newStage as any,
+        customFields: updatedCustomFields,
+      },
     });
 
     // 3. Log action to activity logs
@@ -132,7 +179,7 @@ export async function updateLeadStage(leadId: string, newStage: string, userId: 
       },
     });
 
-    return { lead: updatedLead, oldStage, newStage };
+    return { lead: enrichLead(updatedLead), oldStage, newStage };
   });
 }
 
@@ -150,12 +197,43 @@ export async function addLeadNote(leadId: string, noteText: string, userId: stri
       throw new Error('Lead not found');
     }
 
+    // Prepare updated custom fields
+    let updatedCustomFields: any = lead.customFields ? { ...(lead.customFields as any) } : {};
+    const now = new Date();
+    updatedCustomFields.lastActivityAt = now.toISOString();
+
+    const isCna = noteText.startsWith('Call Not Attended');
+    if (isCna) {
+      updatedCustomFields.callAttempts = (updatedCustomFields.callAttempts || 0) + 1;
+      updatedCustomFields.lastCallResult = 'Call Not Attended';
+      updatedCustomFields.lastActivityType = 'Call Not Attended';
+    } else {
+      updatedCustomFields.lastActivityType = 'Note Added';
+      
+      // Check if this note is connected with a call outcome
+      if (lead.stage === 'CONTACTED') {
+        updatedCustomFields.callAttempts = (updatedCustomFields.callAttempts || 0) + 1;
+        updatedCustomFields.lastCallResult = 'Connected';
+      }
+    }
+
+    // If lead is in NEGOTIATION (Proposal) stage, store note as proposalNotes
+    if (lead.stage === 'NEGOTIATION') {
+      updatedCustomFields.proposalNotes = noteText;
+    }
+
+    // Update lead custom fields
+    await tx.lead.update({
+      where: { id: leadId },
+      data: { customFields: updatedCustomFields },
+    });
+
     // 2. Create activity log entry for the note
     const logRecord = await tx.activityLog.create({
       data: {
         leadId,
         userId,
-        action: 'note',
+        action: isCna ? 'call_not_attended' : 'note',
         oldValue: null,
         newValue: noteText,
         clientId: lead.clientId,

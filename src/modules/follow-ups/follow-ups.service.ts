@@ -27,6 +27,15 @@ export async function scheduleFollowUp(leadId: string, scheduledAt: Date, note?:
       },
     });
 
+    // Reset lead inactivity
+    let updatedCustomFields: any = lead.customFields ? { ...(lead.customFields as any) } : {};
+    updatedCustomFields.lastActivityAt = new Date().toISOString();
+    updatedCustomFields.lastActivityType = 'Reminder Scheduled';
+    await tx.lead.update({
+      where: { id: leadId },
+      data: { customFields: updatedCustomFields }
+    });
+
     return followUp;
   });
 }
@@ -80,11 +89,19 @@ export async function completeFollowUp(id: string, outcome?: string, userId?: st
       },
     });
 
+    // Reset lead inactivity
+    let updatedCustomFields: any = followUp.lead.customFields ? { ...(followUp.lead.customFields as any) } : {};
+    updatedCustomFields.lastActivityAt = new Date().toISOString();
+    updatedCustomFields.lastActivityType = 'Reminder Completed';
+
     if (leadStage && followUp.lead && followUp.lead.stage !== leadStage) {
       const oldStage = followUp.lead.stage;
       await tx.lead.update({
         where: { id: followUp.leadId },
-        data: { stage: leadStage }
+        data: {
+          stage: leadStage,
+          customFields: updatedCustomFields
+        }
       });
 
       await tx.activityLog.create({
@@ -97,6 +114,11 @@ export async function completeFollowUp(id: string, outcome?: string, userId?: st
           oldValue: oldStage,
           newValue: leadStage,
         }
+      });
+    } else {
+      await tx.lead.update({
+        where: { id: followUp.leadId },
+        data: { customFields: updatedCustomFields }
       });
     }
 

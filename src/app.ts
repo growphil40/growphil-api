@@ -34,6 +34,7 @@ import { tokenRefreshQueue, scheduleTokenRefresh, tokenRefreshWorker } from './q
 import { notificationsQueue, notificationsWorker } from './modules/notifications/notification.queue';
 import { trialExpiryQueue, scheduleDailyTrialSweep, trialExpiryWorker } from './queues/trialExpiryQueue';
 import { startSpreadsheetScheduler } from './modules/google-sheets/spreadsheetScheduler.service';
+import { startPipelineAutomationScheduler } from './modules/leads/automationScheduler.service';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -205,6 +206,13 @@ if (process.env.NODE_ENV !== 'test') {
       startSpreadsheetScheduler();
     } catch (err: any) {
       console.error('Failed to start spreadsheet scheduler:', err.message);
+    }
+
+    // Always start the Pipeline Automation scheduler
+    try {
+      startPipelineAutomationScheduler();
+    } catch (err: any) {
+      console.error('Failed to start pipeline automation scheduler:', err.message);
     }
 
     if (enableMeta) {
